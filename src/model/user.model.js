@@ -2,10 +2,23 @@ const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema(
   {
+    firstName: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    lastName: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
     userName: {
       type: String,
       required: true,
       trim: true,
+      unique: true,
     },
 
     email: {
@@ -31,6 +44,11 @@ const userSchema = new mongoose.Schema(
     department: {
       type: String,
       enum: ["ServiceNow", "Web Development", "App Development", "AI Content Creation"],
+      default: null,
+    },
+
+    serviceNowSysId: {
+      type: String,
       default: null,
     },
 

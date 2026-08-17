@@ -50,10 +50,13 @@ async function loginUser(req, res) {
   message: "Login successful",
   token,
   user: {
-    id: existingUser._id,
-    userName: existingUser.userName,
-    email: existingUser.email,
-    role: existingUser.role,
+    id        : existingUser._id,
+    firstName : existingUser.firstName ?? null,
+    lastName  : existingUser.lastName  ?? null,
+    userName  : existingUser.userName,
+    email     : existingUser.email,
+    role      : existingUser.role,
+    department: existingUser.department ?? null,
   },
 });
     } catch (error) {

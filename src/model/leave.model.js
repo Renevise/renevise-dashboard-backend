@@ -19,8 +19,9 @@ const leaveSchema = new mongoose.Schema(
             enum: ['Pending', 'Approved', 'Rejected'],
             default: 'Pending',
         },
-        reviewedBy: { type: String, default: null },
-        reviewedAt: { type: Date,   default: null },
+        reviewedBy:   { type: String, default: null },
+        reviewedAt:   { type: Date,   default: null },
+        snowLeaveId:  { type: String, default: null },
     },
     { timestamps: true }
 );

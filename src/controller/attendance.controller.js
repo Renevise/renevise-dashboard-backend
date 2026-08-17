@@ -1,5 +1,6 @@
 const AttendanceModel = require('../model/attendance.model');
 const UserModel = require('../model/user.model');
+const { postAttendanceToSnow } = require('../services/servicenow.service');
 
 const DEPT_CUTOFF_MINUTES = {
     'ServiceNow':          17 * 60 + 45,  
@@ -39,7 +40,7 @@ async function clockIn(req, res) {
         const userId = req.user.userId;
         const { locationType = 'office' } = req.body;
 
-        const user = await UserModel.findById(userId).select('-password');
+        const user = await UserModel.findById(userId).select('firstName lastName userName department');
         if (!user) return res.status(404).json({ message: 'User not found' });
 
         const today = localDateString();
@@ -50,10 +51,14 @@ async function clockIn(req, res) {
         }
 
         const clockInMs = Date.now();
+        const employeeName = (user.firstName && user.lastName)
+            ? `${user.firstName} ${user.lastName}`
+            : user.userName;
 
         const record = await AttendanceModel.create({
             userId,
-            employee: user.userName,
+            employee:   employeeName,
+            department: user.department ?? null,
             date: today,
             clockIn: formatTime(clockInMs),
             clockInMs,
@@ -79,7 +84,7 @@ async function clockOut(req, res) {
             return res.status(404).json({ message: 'No active clock-in session found for today' });
         }
 
-        const user = await UserModel.findById(userId).select('department');
+        const user = await UserModel.findById(userId).select('department email serviceNowSysId');
         const department = user?.department ?? 'ServiceNow';
 
         const clockOutMs = Date.now();
@@ -87,6 +92,7 @@ async function clockOut(req, res) {
         const workedSec = Math.max(0, rawSec - breakSec);
         const workedHours = parseFloat((workedSec / 3600).toFixed(2));
         const breakMinutes = Math.round(breakSec / 60);
+        const shiftDurationMins = Math.floor((clockOutMs - record.clockInMs) / 60000);
         const status = determineStatus(record.clockInMs, workedHours, department);
 
         const updated = await AttendanceModel.findByIdAndUpdate(
@@ -95,12 +101,27 @@ async function clockOut(req, res) {
                 clockOut: formatTime(clockOutMs),
                 clockOutMs,
                 breakMinutes,
+                shiftDurationMins,
                 workedSeconds: workedSec,
                 workedHours,
                 status,
             },
             { new: true }
         );
+
+        // Fire-and-forget: sync to ServiceNow after MongoDB is updated
+        postAttendanceToSnow({
+            snowSysId   : user.serviceNowSysId ?? null,
+            userEmail   : user.email,
+            clockInMs   : record.clockInMs,
+            clockOutMs,
+            date        : updated.date,
+            locationType: updated.locationType,
+            status,
+            department  : user.department ?? null,
+            breakMinutes,
+            shiftDurationMins,
+        }).catch(err => console.error('[ServiceNow] Sync failed:', err.message));
 
         return res.status(200).json({ message: 'Clocked out successfully', record: updated });
     } catch (error) {

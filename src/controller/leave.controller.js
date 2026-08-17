@@ -2,6 +2,7 @@ const LeaveModel         = require('../model/leave.model');
 const UserModel          = require('../model/user.model');
 const NotificationModel  = require('../model/notification.model');
 const { sendLeaveStatusEmail } = require('../services/email.service');
+const { syncLeaveRequestToSnow, syncEmployeeToSnow } = require('../services/servicenow.service');
 
 const INITIAL_LEAVE_BALANCE = 12;
 
@@ -67,6 +68,39 @@ async function applyLeave(req, res) {
             reason: reason.trim(),
         });
 
+        // Fire-and-forget: ensure employee exists in ServiceNow, then sync leave.
+        // Stage 1 — auto-register employee in ServiceNow if not already present.
+        // Stage 2 — create leave request record in ServiceNow.
+        // Stage 3 — persist returned sys_id to MongoDB.
+        const _leaveId  = leave._id;
+        const _leaveDoc = leave;
+        syncEmployeeToSnow({
+            firstName:  user.firstName  ?? null,
+            lastName:   user.lastName   ?? null,
+            userName:   user.userName,
+            email:      user.email,
+            department: user.department ?? null,
+            role:       user.role       ?? 'employee',
+        })
+            .catch(err => {
+                console.warn(`[LeaveSync] Stage1 employee auto-register failed (non-blocking): ${err.message}`);
+            })
+            .then(() => {
+                console.log(`[LeaveSync] Stage2 — calling syncLeaveRequestToSnow for leave ${_leaveId}`);
+                return syncLeaveRequestToSnow({ leave: _leaveDoc, snowLeaveId: null });
+            })
+            .then(sysId => {
+                console.log(`[LeaveSync] Stage2 result — sys_id: ${sysId ?? 'null (sync failed or employee not in SN)'}`);
+                if (sysId) {
+                    console.log(`[LeaveSync] Stage3 — updating MongoDB snowLeaveId for leave ${_leaveId}`);
+                    return LeaveModel.findByIdAndUpdate(_leaveId, { snowLeaveId: sysId })
+                        .then(() => console.log(`[LeaveSync] Stage3 ✓ snowLeaveId saved: ${sysId}`))
+                        .catch(err => console.error(`[LeaveSync] Stage3 ✗ MongoDB update failed: ${err.message}`));
+                }
+                console.warn(`[LeaveSync] Stage3 skipped — no sys_id returned; snowLeaveId remains null`);
+            })
+            .catch(err => console.error(`[LeaveSync] Leave create sync pipeline failed: ${err.message}`));
+
         return res.status(201).json({ message: 'Leave request submitted successfully', leave });
     } catch (error) {
         return res.status(500).json({ message: 'Internal server error', error: error.message });
@@ -128,6 +162,22 @@ async function reviewLeave(req, res) {
             { new: true }
         );
 
+        // Fire-and-forget: sync the reviewed (Approved/Rejected) leave to ServiceNow.
+        // Uses existing snowLeaveId to PATCH if available, otherwise POSTs a new record.
+        const _existingSnowId = updated.snowLeaveId ?? null;
+        const _updatedDoc     = updated;
+        console.log(`[LeaveSync] reviewLeave — calling syncLeaveRequestToSnow for leave ${updated._id} snowLeaveId=${_existingSnowId ?? 'none'}`);
+        syncLeaveRequestToSnow({ leave: _updatedDoc, snowLeaveId: _existingSnowId })
+            .then(sysId => {
+                console.log(`[LeaveSync] reviewLeave sync result — sys_id: ${sysId ?? 'null'}`);
+                if (sysId && !_existingSnowId) {
+                    return LeaveModel.findByIdAndUpdate(_updatedDoc._id, { snowLeaveId: sysId })
+                        .then(() => console.log(`[LeaveSync] ✓ snowLeaveId saved after review: ${sysId}`))
+                        .catch(err => console.error(`[LeaveSync] ✗ MongoDB snowLeaveId update failed after review: ${err.message}`));
+                }
+            })
+            .catch(err => console.error(`[LeaveSync] Leave review sync failed: ${err.message}`));
+
         sendLeaveStatusEmail({
             to          : leave.email,
             employeeName: leave.employee,
@@ -155,4 +205,77 @@ async function reviewLeave(req, res) {
     }
 }
 
-module.exports = { applyLeave, getMyLeaves, getAllLeaves, reviewLeave };
+// ─── ServiceNow → MongoDB reverse sync ───────────────────────────────────────
+// Called by a ServiceNow Business Rule whenever a Leave Request record is updated.
+// Authentication: shared secret in X-Snow-Webhook-Secret header.
+// This handler intentionally does NOT call syncLeaveRequestToSnow — that would
+// re-update ServiceNow and trigger the Business Rule again (infinite loop).
+// Idempotency check: if MongoDB already reflects the same state, the update is
+// skipped, which also neutralises any re-trigger from our own MongoDB→SN syncs.
+async function snowWebhookHandler(req, res) {
+    try {
+        const { snowSysId, status, approvedBy, approvedOn } = req.body;
+
+        if (!snowSysId) return res.status(400).json({ message: 'snowSysId is required' });
+        if (!status)    return res.status(400).json({ message: 'status is required' });
+
+        // Map ServiceNow stored choice values → MongoDB enum
+        const statusMap = { approved: 'Approved', rejected: 'Rejected', pending: 'Pending' };
+        const mongoStatus = statusMap[status.toLowerCase()];
+        if (!mongoStatus) {
+            return res.status(400).json({
+                message: `Unknown ServiceNow status: "${status}". Expected: approved | rejected | pending`,
+            });
+        }
+
+        // Find ONLY by snowLeaveId — never touch any other leave document
+        const leave = await LeaveModel.findOne({ snowLeaveId: snowSysId });
+        if (!leave) {
+            console.warn(`[SnowWebhook] No MongoDB leave found with snowLeaveId: ${snowSysId}`);
+            return res.status(404).json({ message: `No leave linked to ServiceNow sys_id: ${snowSysId}` });
+        }
+
+        // Idempotency: skip write if nothing actually changed.
+        // This prevents unnecessary DB writes and short-circuits any sync loop:
+        // our own SN syncs set the same status, so the Business Rule re-trigger
+        // hits this guard and returns 200 without touching MongoDB again.
+        const sameStatus   = leave.status    === mongoStatus;
+        const sameReviewer = (leave.reviewedBy ?? '') === (approvedBy ?? '');
+        if (sameStatus && sameReviewer) {
+            console.log(`[SnowWebhook] Idempotency skip — leave ${leave._id} already ${mongoStatus}`);
+            return res.status(200).json({ message: 'No change needed', leaveId: leave._id });
+        }
+
+        const updateFields = { status: mongoStatus };
+
+        if (approvedBy) {
+            updateFields.reviewedBy = approvedBy;
+        }
+
+        // approvedOn arrives as "YYYY-MM-DD HH:MM:SS" UTC from ServiceNow
+        if (approvedOn) {
+            const parsed = new Date(approvedOn.replace(' ', 'T') + 'Z');
+            if (!isNaN(parsed)) updateFields.reviewedAt = parsed;
+        }
+
+        const updated = await LeaveModel.findByIdAndUpdate(leave._id, updateFields, { new: true });
+
+        console.log(
+            `[SnowWebhook] ✓ Leave ${updated._id} updated — ` +
+            `status: ${updated.status} | reviewedBy: ${updated.reviewedBy ?? 'n/a'} | reviewedAt: ${updated.reviewedAt ?? 'n/a'}`
+        );
+
+        return res.status(200).json({
+            message   : 'Leave updated from ServiceNow',
+            leaveId   : updated._id,
+            status    : updated.status,
+            reviewedBy: updated.reviewedBy,
+            reviewedAt: updated.reviewedAt,
+        });
+    } catch (error) {
+        console.error('[SnowWebhook] Error:', error.message);
+        return res.status(500).json({ message: 'Internal server error', error: error.message });
+    }
+}
+
+module.exports = { applyLeave, getMyLeaves, getAllLeaves, reviewLeave, snowWebhookHandler };

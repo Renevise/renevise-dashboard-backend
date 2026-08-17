@@ -11,6 +11,10 @@ const attendanceSchema = new mongoose.Schema(
             type: String,
             required: true,
         },
+        department: {
+            type: String,
+            default: null,
+        },
         date: {
             type: String,
             required: true,
@@ -32,6 +36,10 @@ const attendanceSchema = new mongoose.Schema(
             default: null,
         },
         breakMinutes: {
+            type: Number,
+            default: 0,
+        },
+        shiftDurationMins: {
             type: Number,
             default: 0,
         },

@@ -6,9 +6,9 @@ const { sendOvertimeStatusEmail } = require('../services/email.service');
 async function submitOvertime(req, res) {
     try {
         const userId = req.user.userId;
-        const { onBehalf = '', requestedFor, date, extraHours, reason } = req.body;
+        const { onBehalf = '', requestedForId, date, extraHours, reason } = req.body;
 
-        if (!requestedFor?.trim() || !date || !reason?.trim()) {
+        if (!date || !reason?.trim()) {
             return res.status(400).json({ message: 'All required fields must be filled' });
         }
         const hours = Number(extraHours);
@@ -16,8 +16,25 @@ async function submitOvertime(req, res) {
             return res.status(400).json({ message: 'Extra hours must be at least 0.5' });
         }
 
-        const user = await UserModel.findById(userId).select('-password');
-        if (!user) return res.status(404).json({ message: 'User not found' });
+        const submitter = await UserModel.findById(userId).select('-password');
+        if (!submitter) return res.status(404).json({ message: 'User not found' });
+
+        let targetUser;
+        let resolvedRequestedForId;
+
+        if (onBehalf === 'Yes') {
+            if (!requestedForId) {
+                return res.status(400).json({ message: 'Please select the employee this request is for' });
+            }
+            targetUser = await UserModel.findById(requestedForId).select('-password');
+            if (!targetUser) {
+                return res.status(404).json({ message: 'Selected user does not exist' });
+            }
+            resolvedRequestedForId = targetUser._id;
+        } else {
+            targetUser             = submitter;
+            resolvedRequestedForId = submitter._id;
+        }
 
         const existing = await OvertimeModel.findOne({ userId, date, status: 'Pending' });
         if (existing) {
@@ -28,13 +45,14 @@ async function submitOvertime(req, res) {
 
         const overtime = await OvertimeModel.create({
             userId,
-            employee    : user.userName,
-            email       : user.email,
-            onBehalf    : onBehalf.trim(),
-            requestedFor: requestedFor.trim(),
+            employee       : submitter.userName,
+            email          : submitter.email,
+            onBehalf       : onBehalf.trim(),
+            requestedFor   : targetUser.userName,
+            requestedForId : resolvedRequestedForId,
             date,
-            extraHours  : hours,
-            reason      : reason.trim(),
+            extraHours     : hours,
+            reason         : reason.trim(),
         });
 
         return res.status(201).json({
