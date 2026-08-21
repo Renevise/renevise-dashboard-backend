@@ -68,10 +68,6 @@ async function applyLeave(req, res) {
             reason: reason.trim(),
         });
 
-        // Fire-and-forget: ensure employee exists in ServiceNow, then sync leave.
-        // Stage 1 — auto-register employee in ServiceNow if not already present.
-        // Stage 2 — create leave request record in ServiceNow.
-        // Stage 3 — persist returned sys_id to MongoDB.
         const _leaveId  = leave._id;
         const _leaveDoc = leave;
         syncEmployeeToSnow({
@@ -162,8 +158,6 @@ async function reviewLeave(req, res) {
             { new: true }
         );
 
-        // Fire-and-forget: sync the reviewed (Approved/Rejected) leave to ServiceNow.
-        // Uses existing snowLeaveId to PATCH if available, otherwise POSTs a new record.
         const _existingSnowId = updated.snowLeaveId ?? null;
         const _updatedDoc     = updated;
         console.log(`[LeaveSync] reviewLeave — calling syncLeaveRequestToSnow for leave ${updated._id} snowLeaveId=${_existingSnowId ?? 'none'}`);
@@ -205,13 +199,6 @@ async function reviewLeave(req, res) {
     }
 }
 
-// ─── ServiceNow → MongoDB reverse sync ───────────────────────────────────────
-// Called by a ServiceNow Business Rule whenever a Leave Request record is updated.
-// Authentication: shared secret in X-Snow-Webhook-Secret header.
-// This handler intentionally does NOT call syncLeaveRequestToSnow — that would
-// re-update ServiceNow and trigger the Business Rule again (infinite loop).
-// Idempotency check: if MongoDB already reflects the same state, the update is
-// skipped, which also neutralises any re-trigger from our own MongoDB→SN syncs.
 async function snowWebhookHandler(req, res) {
     try {
         const { snowSysId, status, approvedBy, approvedOn } = req.body;
@@ -219,7 +206,6 @@ async function snowWebhookHandler(req, res) {
         if (!snowSysId) return res.status(400).json({ message: 'snowSysId is required' });
         if (!status)    return res.status(400).json({ message: 'status is required' });
 
-        // Map ServiceNow stored choice values → MongoDB enum
         const statusMap = { approved: 'Approved', rejected: 'Rejected', pending: 'Pending' };
         const mongoStatus = statusMap[status.toLowerCase()];
         if (!mongoStatus) {
@@ -228,17 +214,12 @@ async function snowWebhookHandler(req, res) {
             });
         }
 
-        // Find ONLY by snowLeaveId — never touch any other leave document
         const leave = await LeaveModel.findOne({ snowLeaveId: snowSysId });
         if (!leave) {
             console.warn(`[SnowWebhook] No MongoDB leave found with snowLeaveId: ${snowSysId}`);
             return res.status(404).json({ message: `No leave linked to ServiceNow sys_id: ${snowSysId}` });
         }
 
-        // Idempotency: skip write if nothing actually changed.
-        // This prevents unnecessary DB writes and short-circuits any sync loop:
-        // our own SN syncs set the same status, so the Business Rule re-trigger
-        // hits this guard and returns 200 without touching MongoDB again.
         const sameStatus   = leave.status    === mongoStatus;
         const sameReviewer = (leave.reviewedBy ?? '') === (approvedBy ?? '');
         if (sameStatus && sameReviewer) {
@@ -252,7 +233,6 @@ async function snowWebhookHandler(req, res) {
             updateFields.reviewedBy = approvedBy;
         }
 
-        // approvedOn arrives as "YYYY-MM-DD HH:MM:SS" UTC from ServiceNow
         if (approvedOn) {
             const parsed = new Date(approvedOn.replace(' ', 'T') + 'Z');
             if (!isNaN(parsed)) updateFields.reviewedAt = parsed;

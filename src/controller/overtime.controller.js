@@ -2,6 +2,7 @@ const OvertimeModel     = require('../model/overtime.model');
 const UserModel         = require('../model/user.model');
 const NotificationModel = require('../model/notification.model');
 const { sendOvertimeStatusEmail } = require('../services/email.service');
+const { syncEmployeeToSnow, syncOvertimeToSnow } = require('../services/servicenow.service');
 
 async function submitOvertime(req, res) {
     try {
@@ -54,6 +55,35 @@ async function submitOvertime(req, res) {
             extraHours     : hours,
             reason         : reason.trim(),
         });
+
+        const _overtimeId  = overtime._id;
+        const _overtimeDoc = overtime;
+        syncEmployeeToSnow({
+            firstName:  submitter.firstName  ?? null,
+            lastName:   submitter.lastName   ?? null,
+            userName:   submitter.userName,
+            email:      submitter.email,
+            department: submitter.department ?? null,
+            role:       submitter.role       ?? 'employee',
+        })
+            .catch(err => {
+                console.warn(`[OvertimeSync] Stage1 employee auto-register failed (non-blocking): ${err.message}`);
+            })
+            .then(() => {
+                console.log(`[OvertimeSync] Stage2 — calling syncOvertimeToSnow for overtime ${_overtimeId}`);
+                return syncOvertimeToSnow({ overtime: _overtimeDoc, snowOvertimeId: null });
+            })
+            .then(sysId => {
+                console.log(`[OvertimeSync] Stage2 result — sys_id: ${sysId ?? 'null (sync failed or employee not in SN)'}`);
+                if (sysId) {
+                    console.log(`[OvertimeSync] Stage3 — updating MongoDB snowOvertimeId for overtime ${_overtimeId}`);
+                    return OvertimeModel.findByIdAndUpdate(_overtimeId, { snowOvertimeId: sysId })
+                        .then(() => console.log(`[OvertimeSync] Stage3 ✓ snowOvertimeId saved: ${sysId}`))
+                        .catch(err => console.error(`[OvertimeSync] Stage3 ✗ MongoDB update failed: ${err.message}`));
+                }
+                console.warn(`[OvertimeSync] Stage3 skipped — no sys_id returned; snowOvertimeId remains null`);
+            })
+            .catch(err => console.error(`[OvertimeSync] Overtime create sync pipeline failed: ${err.message}`));
 
         return res.status(201).json({
             message : 'Overtime request submitted successfully',
@@ -110,6 +140,20 @@ async function reviewOvertime(req, res) {
             },
             { new: true }
         );
+
+        const _existingSnowId = updated.snowOvertimeId ?? null;
+        const _updatedDoc     = updated;
+        console.log(`[OvertimeSync] reviewOvertime — calling syncOvertimeToSnow for overtime ${updated._id} snowOvertimeId=${_existingSnowId ?? 'none'}`);
+        syncOvertimeToSnow({ overtime: _updatedDoc, snowOvertimeId: _existingSnowId })
+            .then(sysId => {
+                console.log(`[OvertimeSync] reviewOvertime sync result — sys_id: ${sysId ?? 'null'}`);
+                if (sysId && !_existingSnowId) {
+                    return OvertimeModel.findByIdAndUpdate(_updatedDoc._id, { snowOvertimeId: sysId })
+                        .then(() => console.log(`[OvertimeSync] ✓ snowOvertimeId saved after review: ${sysId}`))
+                        .catch(err => console.error(`[OvertimeSync] ✗ MongoDB snowOvertimeId update failed after review: ${err.message}`));
+                }
+            })
+            .catch(err => console.error(`[OvertimeSync] Overtime review sync failed: ${err.message}`));
 
         NotificationModel.create({
             userId    : overtime.userId,

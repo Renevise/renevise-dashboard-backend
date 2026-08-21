@@ -1,5 +1,6 @@
 const ATTENDANCE_TABLE     = '/api/now/table/x_1785430_innovi_0_attendance_log';
 const LEAVE_TABLE          = '/api/now/table/x_1785430_innovi_0_leave';
+const OVERTIME_TABLE       = '/api/now/table/x_1785430_innovi_0_overtime_log';
 const SYS_USER_TABLE       = '/api/now/table/sys_user';
 const CMN_DEPARTMENT_TABLE = '/api/now/table/cmn_department';
 
@@ -13,9 +14,6 @@ function basicAuthHeader() {
     return 'Basic ' + Buffer.from(`${u}:${p}`).toString('base64');
 }
 
-// Converts a UTC ms timestamp to "YYYY-MM-DD HH:MM:SS" in UTC.
-// ServiceNow treats incoming datetime strings as UTC and applies its own
-// timezone internally, so we must send UTC — not PKT — to avoid date drift.
 function msToUtcDatetime(ms) {
     const d   = new Date(ms);
     const pad = n => String(n).padStart(2, '0');
@@ -25,7 +23,6 @@ function msToUtcDatetime(ms) {
     );
 }
 
-// Maps MongoDB attendance status to ServiceNow valid choice values.
 function toSnowStatus(mongoStatus) {
     switch (mongoStatus) {
         case 'Present':     return 'on_time';
@@ -36,7 +33,6 @@ function toSnowStatus(mongoStatus) {
     }
 }
 
-// Looks up ServiceNow sys_user.sys_id by email address.
 async function resolveSnowSysId(email) {
     const url =
         `${getBase()}${SYS_USER_TABLE}` +
@@ -53,8 +49,6 @@ async function resolveSnowSysId(email) {
     return data.result?.[0]?.sys_id ?? null;
 }
 
-// Resolves a cmn_department sys_id by display name.
-// Returns null (not throws) so a missing dept never blocks the sync.
 async function resolveSnowDepartmentSysId(departmentName) {
     if (!departmentName) return null;
 
@@ -75,10 +69,6 @@ async function resolveSnowDepartmentSysId(departmentName) {
     }
 }
 
-/**
- * Creates a sys_user in ServiceNow for a newly registered employee.
- * Returns the ServiceNow sys_id, or null if creation failed.
- */
 async function syncEmployeeToSnow({ firstName, lastName, userName, email, department, role }) {
     const base     = getBase();
     const username = process.env.SERVICENOW_USERNAME;
@@ -89,14 +79,12 @@ async function syncEmployeeToSnow({ firstName, lastName, userName, email, depart
         return null;
     }
 
-    // Duplicate check — reuse existing sys_id if email already registered
     const existing = await resolveSnowSysId(email);
     if (existing) {
         console.log(`[ServiceNow] sys_user already exists for "${email}" — reusing sys_id`);
         return existing;
     }
 
-    // department is a reference field in sys_user; resolve to sys_id or omit
     const deptSysId = await resolveSnowDepartmentSysId(department);
     if (department && !deptSysId) {
         console.warn(`[ServiceNow] Department "${department}" not found in cmn_department — omitting`);
@@ -133,10 +121,6 @@ async function syncEmployeeToSnow({ firstName, lastName, userName, email, depart
     return sysId;
 }
 
-/**
- * Posts a completed attendance record to the ServiceNow attendance_log table.
- * Called fire-and-forget from clockOut — errors are caught by the caller.
- */
 async function postAttendanceToSnow({ snowSysId, userEmail, clockInMs, clockOutMs, date, locationType, status, department, breakMinutes, shiftDurationMins }) {
     const base     = getBase();
     const username = process.env.SERVICENOW_USERNAME;
@@ -147,7 +131,6 @@ async function postAttendanceToSnow({ snowSysId, userEmail, clockInMs, clockOutM
         return;
     }
 
-    // Use stored sys_id directly; fall back to email lookup only if not available
     let sysId = snowSysId ?? null;
     if (!sysId) {
         sysId = await resolveSnowSysId(userEmail);
@@ -161,7 +144,6 @@ async function postAttendanceToSnow({ snowSysId, userEmail, clockInMs, clockOutM
     const isHalfDay  = (status === 'Half Day' || status === 'Early Leave') ? 'true' : 'false';
     const snowStatus = toSnowStatus(status);
 
-    // Resolve department to its cmn_department sys_id (reference field)
     const deptSysId = await resolveSnowDepartmentSysId(department);
 
     const payload = {
@@ -199,7 +181,6 @@ async function postAttendanceToSnow({ snowSysId, userEmail, clockInMs, clockOutM
     console.log(`[ServiceNow] Attendance synced — record sys_id: ${data.result?.sys_id}`);
 }
 
-// Maps MongoDB leaveType string to ServiceNow leave_type choice value.
 function toSnowLeaveType(mongoLeaveType) {
     const t = (mongoLeaveType || '').toLowerCase();
     if (t.includes('sick'))   return 'sick';
@@ -209,7 +190,6 @@ function toSnowLeaveType(mongoLeaveType) {
     return 'other';
 }
 
-// Maps MongoDB status to ServiceNow status choice value.
 function toSnowLeaveStatus(mongoStatus) {
     switch (mongoStatus) {
         case 'Approved': return 'approved';
@@ -218,7 +198,6 @@ function toSnowLeaveStatus(mongoStatus) {
     }
 }
 
-// Looks up ServiceNow sys_user.sys_id by username (for reviewedBy field).
 async function resolveSnowSysIdByUsername(username) {
     if (!username) return null;
     const url =
@@ -237,15 +216,6 @@ async function resolveSnowSysIdByUsername(username) {
     }
 }
 
-/**
- * Creates or updates a Leave Request record in ServiceNow.
- * Call fire-and-forget; errors are caught by the caller.
- *
- * @param {object} opts
- * @param {object} opts.leave        - MongoDB Leave document
- * @param {string|null} opts.snowLeaveId - Existing ServiceNow sys_id; null → create, string → update
- * @returns {Promise<string|null>}   ServiceNow sys_id of the created/updated record, or null on failure
- */
 async function syncLeaveRequestToSnow({ leave, snowLeaveId }) {
     const base     = getBase();
     const username = process.env.SERVICENOW_USERNAME;
@@ -288,7 +258,6 @@ async function syncLeaveRequestToSnow({ leave, snowLeaveId }) {
         to_date:    leave.untilDate,
     };
 
-    // approved_by — only set when reviewedBy exists (non-pending leaves)
     if (leave.reviewedBy) {
         console.log(`[LeaveSync] → approved_by lookup by username: "${leave.reviewedBy}"`);
         const approvedBySysId = await resolveSnowSysIdByUsername(leave.reviewedBy);
@@ -300,7 +269,6 @@ async function syncLeaveRequestToSnow({ leave, snowLeaveId }) {
         }
     }
 
-    // approved_on — only set when reviewedAt exists
     if (leave.reviewedAt) {
         payload.approved_on = msToUtcDatetime(new Date(leave.reviewedAt).getTime());
         console.log(`[LeaveSync] ✓ approved_on: ${payload.approved_on}`);
@@ -309,7 +277,7 @@ async function syncLeaveRequestToSnow({ leave, snowLeaveId }) {
     console.log(`[LeaveSync] → Payload: ${JSON.stringify(payload)}`);
 
     if (snowLeaveId) {
-        // UPDATE existing ServiceNow record
+        
         const url = `${base}${LEAVE_TABLE}/${snowLeaveId}`;
         console.log(`[LeaveSync] → PATCH ${url}`);
         const res = await fetch(url, {
@@ -332,7 +300,7 @@ async function syncLeaveRequestToSnow({ leave, snowLeaveId }) {
         console.log(`[LeaveSync] ✓ Leave UPDATED in ServiceNow — sys_id: ${updatedId}`);
         return updatedId;
     } else {
-        // CREATE new ServiceNow record
+        
         const url = `${base}${LEAVE_TABLE}`;
         console.log(`[LeaveSync] → POST ${url}`);
         const res = await fetch(url, {
@@ -357,4 +325,101 @@ async function syncLeaveRequestToSnow({ leave, snowLeaveId }) {
     }
 }
 
-module.exports = { syncEmployeeToSnow, postAttendanceToSnow, syncLeaveRequestToSnow };
+async function syncOvertimeToSnow({ overtime, snowOvertimeId }) {
+    const base     = getBase();
+    const username = process.env.SERVICENOW_USERNAME;
+    const password = process.env.SERVICENOW_PASSWORD;
+
+    console.log(`[OvertimeSync] ▶ START overtime=${overtime._id} email="${overtime.email}" status="${overtime.status}" existingSnowId=${snowOvertimeId ?? 'none'}`);
+
+    if (!base || !username || !password) {
+        console.warn('[OvertimeSync] ✗ Aborted — SERVICENOW_* env vars not configured');
+        return null;
+    }
+
+    console.log(`[OvertimeSync] → sys_user lookup by email: "${overtime.email}"`);
+    let employeeSysId;
+    try {
+        employeeSysId = await resolveSnowSysId(overtime.email);
+    } catch (err) {
+        console.error(`[OvertimeSync] ✗ sys_user lookup threw: ${err.message}`);
+        throw err;
+    }
+
+    if (!employeeSysId) {
+        console.error(
+            `[OvertimeSync] ✗ No ServiceNow sys_user found for email "${overtime.email}". ` +
+            `Ensure the employee is registered in ServiceNow before syncing overtime.`
+        );
+        return null;
+    }
+    console.log(`[OvertimeSync] ✓ Employee sys_id: ${employeeSysId}`);
+
+    const payload = {
+        employee  : employeeSysId,
+        ot_date   : overtime.date,
+        ot_hours  : overtime.extraHours,
+        status    : overtime.status.toLowerCase(),
+    };
+
+    if (overtime.reviewedBy) {
+        console.log(`[OvertimeSync] → approved_by lookup by username: "${overtime.reviewedBy}"`);
+        const reviewedBySysId = await resolveSnowSysIdByUsername(overtime.reviewedBy);
+        if (reviewedBySysId) {
+            payload.approved_by = reviewedBySysId;
+            console.log(`[OvertimeSync] ✓ approved_by sys_id: ${reviewedBySysId}`);
+        } else {
+            console.warn(`[OvertimeSync] ✗ No sys_user for username "${overtime.reviewedBy}" — approved_by omitted`);
+        }
+    }
+
+    console.log(`[OvertimeSync] → Payload: ${JSON.stringify(payload)}`);
+
+    if (snowOvertimeId) {
+        const url = `${base}${OVERTIME_TABLE}/${snowOvertimeId}`;
+        console.log(`[OvertimeSync] → PATCH ${url}`);
+        const res = await fetch(url, {
+            method: 'PATCH',
+            headers: {
+                Authorization:  basicAuthHeader(),
+                'Content-Type': 'application/json',
+                Accept:         'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+        console.log(`[OvertimeSync]   HTTP status: ${res.status}`);
+        if (!res.ok) {
+            const text = await res.text();
+            console.error(`[OvertimeSync] ✗ PATCH failed — response: ${text.slice(0, 500)}`);
+            throw new Error(`ServiceNow PATCH overtime failed (${res.status}): ${text}`);
+        }
+        const data = await res.json();
+        const updatedId = data.result?.sys_id ?? snowOvertimeId;
+        console.log(`[OvertimeSync] ✓ Overtime UPDATED in ServiceNow — sys_id: ${updatedId}`);
+        return updatedId;
+    } else {
+        const url = `${base}${OVERTIME_TABLE}`;
+        console.log(`[OvertimeSync] → POST ${url}`);
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                Authorization:  basicAuthHeader(),
+                'Content-Type': 'application/json',
+                Accept:         'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+        console.log(`[OvertimeSync]   HTTP status: ${res.status}`);
+        if (!res.ok) {
+            const text = await res.text();
+            console.error(`[OvertimeSync] ✗ POST failed — response: ${text.slice(0, 500)}`);
+            throw new Error(`ServiceNow POST overtime failed (${res.status}): ${text}`);
+        }
+        const data = await res.json();
+        const newSysId = data.result?.sys_id ?? null;
+        console.log(`[OvertimeSync] ✓ Overtime CREATED in ServiceNow — sys_id: ${newSysId}`);
+        return newSysId;
+    }
+}
+
+module.exports = { syncEmployeeToSnow, postAttendanceToSnow, syncLeaveRequestToSnow, syncOvertimeToSnow };

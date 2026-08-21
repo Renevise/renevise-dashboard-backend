@@ -47,6 +47,29 @@ const userSchema = new mongoose.Schema(
       default: null,
     },
 
+    phone: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    city: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    designation: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    profilePicture: {
+      type: String,
+      default: null,
+    },
+
     serviceNowSysId: {
       type: String,
       default: null,

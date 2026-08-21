@@ -34,7 +34,6 @@ async function createEmployee(req, res) {
             department,
         });
 
-        // Fire-and-forget: register in ServiceNow and save sys_id
         syncEmployeeToSnow({ firstName: firstName.trim(), lastName: lastName.trim(), userName, email, department, role })
             .then(sysId => {
                 if (sysId) return userModel.findByIdAndUpdate(user._id, { serviceNowSysId: sysId });

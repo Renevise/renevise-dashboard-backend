@@ -16,14 +16,16 @@ function pktMinutes(ms) {
 }
 
 function localDateString() {
-    const now = new Date();
-    const pad = n => String(n).padStart(2, '0');
-    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Karachi',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
 }
 
 function formatTime(tsMs) {
     return new Date(tsMs).toLocaleTimeString('en-US', {
         hour: '2-digit', minute: '2-digit', hour12: true,
+        timeZone: 'Asia/Karachi',
     });
 }
 
@@ -109,7 +111,6 @@ async function clockOut(req, res) {
             { new: true }
         );
 
-        // Fire-and-forget: sync to ServiceNow after MongoDB is updated
         postAttendanceToSnow({
             snowSysId   : user.serviceNowSysId ?? null,
             userEmail   : user.email,
