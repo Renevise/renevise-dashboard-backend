@@ -13,11 +13,12 @@ const notificationSchema = new mongoose.Schema(
         type        : {
             type: String,
             enum: [
-                'leave_approved', 'leave_rejected',
-                'correction_approved', 'correction_rejected',
-                'overtime_approved', 'overtime_rejected',
+                'leave_approved', 'leave_rejected', 'leave_expired',
+                'correction_approved', 'correction_rejected', 'correction_expired',
+                'overtime_approved', 'overtime_rejected', 'overtime_expired',
                 'company_off',
-                'client_off_approved', 'client_off_rejected',
+                'client_off_approved', 'client_off_rejected', 'client_off_expired',
+                'auto_clock_out',
             ],
             required: true,
         },

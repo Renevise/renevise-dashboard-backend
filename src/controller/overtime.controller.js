@@ -1,7 +1,7 @@
 const OvertimeModel     = require('../model/overtime.model');
 const UserModel         = require('../model/user.model');
 const NotificationModel = require('../model/notification.model');
-const { sendOvertimeStatusEmail } = require('../services/email.service');
+const { sendOvertimeStatusEmail, sendOvertimeRequestAdminEmail } = require('../services/email.service');
 const { syncEmployeeToSnow, syncOvertimeToSnow } = require('../services/servicenow.service');
 
 async function submitOvertime(req, res) {
@@ -55,6 +55,32 @@ async function submitOvertime(req, res) {
             extraHours     : hours,
             reason         : reason.trim(),
         });
+
+        UserModel.find({ role: 'admin' }).select('email userName')
+            .then(admins => {
+                if (!admins.length) {
+                    console.warn('[Email] No admins found for overtime request notification');
+                    return;
+                }
+                return Promise.all(
+                    admins.map(admin =>
+                        sendOvertimeRequestAdminEmail({
+                            to           : admin.email,
+                            adminName    : admin.userName,
+                            employeeName : submitter.userName,
+                            employeeEmail: submitter.email,
+                            date,
+                            extraHours   : hours,
+                            reason       : reason.trim(),
+                            onBehalf     : onBehalf.trim(),
+                            requestedFor : targetUser.userName,
+                            adminId      : admin._id.toString(),
+                            requestId    : overtime._id.toString(),
+                        }).catch(err => console.error(`[Email] Overtime admin notify failed for ${admin.email}:`, err.message))
+                    )
+                );
+            })
+            .catch(err => console.error('[Email] Admin fetch for overtime request notify failed:', err.message));
 
         const _overtimeId  = overtime._id;
         const _overtimeDoc = overtime;
@@ -126,20 +152,26 @@ async function reviewOvertime(req, res) {
         if (!overtime) {
             return res.status(404).json({ message: 'Overtime request not found' });
         }
+        if (overtime.status === 'Expired') {
+            return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
+        }
         if (overtime.status !== 'Pending') {
             return res.status(409).json({ message: 'This request has already been reviewed' });
         }
 
         const admin   = await UserModel.findById(req.user.userId).select('userName');
-        const updated = await OvertimeModel.findByIdAndUpdate(
-            id,
-            {
-                status,
-                reviewedBy: admin?.userName || 'Admin',
-                reviewedAt: new Date(),
-            },
+        const updated = await OvertimeModel.findOneAndUpdate(
+            { _id: id, status: 'Pending' },
+            { status, reviewedBy: admin?.userName || 'Admin', reviewedAt: new Date() },
             { new: true }
         );
+        if (!updated) {
+            const current = await OvertimeModel.findById(id);
+            if (current?.status === 'Expired') {
+                return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
+            }
+            return res.status(409).json({ message: 'This request was just actioned by another session. Please refresh.' });
+        }
 
         const _existingSnowId = updated.snowOvertimeId ?? null;
         const _updatedDoc     = updated;

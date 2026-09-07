@@ -1,7 +1,7 @@
 const CorrectionModel   = require('../model/attendance-correction.model');
 const UserModel         = require('../model/user.model');
 const NotificationModel = require('../model/notification.model');
-const { sendCorrectionStatusEmail } = require('../services/email.service');
+const { sendCorrectionStatusEmail, sendCorrectionRequestAdminEmail } = require('../services/email.service');
 
 async function submitCorrection(req, res) {
     try {
@@ -11,8 +11,8 @@ async function submitCorrection(req, res) {
         if (!date || !clockIn || !clockOut || !reason?.trim()) {
             return res.status(400).json({ message: 'All fields are required' });
         }
-        if (clockOut <= clockIn) {
-            return res.status(400).json({ message: 'Clock out time must be after clock in time' });
+        if (clockIn === clockOut) {
+            return res.status(400).json({ message: 'Clock out time cannot be the same as clock in time' });
         }
 
         const user = await UserModel.findById(userId).select('-password');
@@ -34,6 +34,31 @@ async function submitCorrection(req, res) {
             clockOut,
             reason  : reason.trim(),
         });
+
+        UserModel.find({ role: 'admin' }).select('email userName')
+            .then(admins => {
+                if (!admins.length) {
+                    console.warn('[Email] No admins found for correction request notification');
+                    return;
+                }
+                return Promise.all(
+                    admins.map(admin =>
+                        sendCorrectionRequestAdminEmail({
+                            to           : admin.email,
+                            adminName    : admin.userName,
+                            employeeName : user.userName,
+                            employeeEmail: user.email,
+                            date,
+                            clockIn,
+                            clockOut,
+                            reason       : reason.trim(),
+                            adminId      : admin._id.toString(),
+                            requestId    : correction._id.toString(),
+                        }).catch(err => console.error(`[Email] Correction admin notify failed for ${admin.email}:`, err.message))
+                    )
+                );
+            })
+            .catch(err => console.error('[Email] Admin fetch for correction request notify failed:', err.message));
 
         return res.status(201).json({
             message   : 'Correction request submitted successfully',
@@ -76,20 +101,26 @@ async function reviewCorrection(req, res) {
         if (!correction) {
             return res.status(404).json({ message: 'Correction request not found' });
         }
+        if (correction.status === 'Expired') {
+            return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
+        }
         if (correction.status !== 'Pending') {
             return res.status(409).json({ message: 'This request has already been reviewed' });
         }
 
         const admin   = await UserModel.findById(req.user.userId).select('userName');
-        const updated = await CorrectionModel.findByIdAndUpdate(
-            id,
-            {
-                status,
-                reviewedBy: admin?.userName || 'Admin',
-                reviewedAt: new Date(),
-            },
+        const updated = await CorrectionModel.findOneAndUpdate(
+            { _id: id, status: 'Pending' },
+            { status, reviewedBy: admin?.userName || 'Admin', reviewedAt: new Date() },
             { new: true }
         );
+        if (!updated) {
+            const current = await CorrectionModel.findById(id);
+            if (current?.status === 'Expired') {
+                return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
+            }
+            return res.status(409).json({ message: 'This request was just actioned by another session. Please refresh.' });
+        }
 
         NotificationModel.create({
             userId      : correction.userId,

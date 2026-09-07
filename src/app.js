@@ -10,6 +10,7 @@ const overtimeRoute=require('./routes/overtime.route')
 const companyOffRoute=require('./routes/company-off.route')
 const clientOffRoute=require('./routes/client-off.route')
 const profileRoute=require('./routes/profile.route')
+const emailActionRoute=require('./routes/email-action.route')
 const cors=require('cors')
 const app=express()
 
@@ -29,6 +30,7 @@ app.use('/api/overtime',overtimeRoute)
 app.use('/api/company-off',companyOffRoute)
 app.use('/api/client-off',clientOffRoute)
 app.use('/api/profile',profileRoute)
+app.use('/api/email-action',emailActionRoute)
 
 
 

@@ -11,11 +11,12 @@ const correctionSchema = new mongoose.Schema(
         reason: { type: String, required: true },
         status: {
             type: String,
-            enum: ['Pending', 'Approved', 'Rejected'],
+            enum: ['Pending', 'Approved', 'Rejected', 'Expired'],
             default: 'Pending',
         },
-        reviewedBy: { type: String, default: null },
-        reviewedAt: { type: Date, default: null },
+        reviewedBy:    { type: String,   default: null },
+        reviewedAt:    { type: Date,     default: null },
+        remindersSent: { type: [String], default: [] },
     },
     { timestamps: true }
 );

@@ -46,7 +46,7 @@ async function clockIn(req, res) {
         if (!user) return res.status(404).json({ message: 'User not found' });
 
         const today = localDateString();
-        const existing = await AttendanceModel.findOne({ userId, date: today, clockOutMs: null });
+        const existing = await AttendanceModel.findOne({ userId, clockOutMs: null });
 
         if (existing) {
             return res.status(409).json({ message: 'Already clocked in today' });
@@ -57,6 +57,10 @@ async function clockIn(req, res) {
             ? `${user.firstName} ${user.lastName}`
             : user.userName;
 
+        const dept           = user.department ?? 'ServiceNow';
+        const cutoff         = DEPT_CUTOFF_MINUTES[dept] ?? DEPT_CUTOFF_MINUTES['ServiceNow'];
+        const prelimStatus   = pktMinutes(clockInMs) > cutoff ? 'Late' : 'Present';
+
         const record = await AttendanceModel.create({
             userId,
             employee:   employeeName,
@@ -65,7 +69,7 @@ async function clockIn(req, res) {
             clockIn: formatTime(clockInMs),
             clockInMs,
             locationType,
-            status: 'Present',
+            status: prelimStatus,
         });
 
         return res.status(201).json({ message: 'Clocked in successfully', record });
@@ -77,25 +81,36 @@ async function clockIn(req, res) {
 async function clockOut(req, res) {
     try {
         const userId = req.user.userId;
-        const { breakSec = 0 } = req.body;
 
-        const today = localDateString();
-        const record = await AttendanceModel.findOne({ userId, date: today, clockOutMs: null });
+        const record = await AttendanceModel.findOne(
+            { userId, clockOutMs: null },
+            null,
+            { sort: { clockInMs: -1 } }
+        );
 
         if (!record) {
-            return res.status(404).json({ message: 'No active clock-in session found for today' });
+            return res.status(404).json({ message: 'No active clock-in session found' });
         }
 
         const user = await UserModel.findById(userId).select('department email serviceNowSysId');
         const department = user?.department ?? 'ServiceNow';
 
         const clockOutMs = Date.now();
+
+        // Compute break entirely from DB — include any still-active break session
+        const activeBreakSec = record.activeBreakStartMs
+            ? Math.max(0, Math.floor((clockOutMs - record.activeBreakStartMs) / 1000))
+            : 0;
+        const totalBreakSec  = (record.accumulatedBreakSec || 0) + activeBreakSec;
+
         const rawSec = Math.max(0, Math.floor((clockOutMs - record.clockInMs) / 1000));
-        const workedSec = Math.max(0, rawSec - breakSec);
+        const workedSec = Math.max(0, rawSec - totalBreakSec);
         const workedHours = parseFloat((workedSec / 3600).toFixed(2));
-        const breakMinutes = Math.round(breakSec / 60);
+        const breakMinutes = Math.round(totalBreakSec / 60);
         const shiftDurationMins = Math.floor((clockOutMs - record.clockInMs) / 60000);
         const status = determineStatus(record.clockInMs, workedHours, department);
+
+        const isLate = pktMinutes(record.clockInMs) > (DEPT_CUTOFF_MINUTES[department] ?? DEPT_CUTOFF_MINUTES['ServiceNow']);
 
         const updated = await AttendanceModel.findByIdAndUpdate(
             record._id,
@@ -107,6 +122,9 @@ async function clockOut(req, res) {
                 workedSeconds: workedSec,
                 workedHours,
                 status,
+                isLate,
+                activeBreakStartMs : null,
+                accumulatedBreakSec: totalBreakSec,
             },
             { new: true }
         );
@@ -130,11 +148,66 @@ async function clockOut(req, res) {
     }
 }
 
+async function startBreak(req, res) {
+    try {
+        const userId = req.user.userId;
+        const record = await AttendanceModel.findOne(
+            { userId, clockOutMs: null },
+            null,
+            { sort: { clockInMs: -1 } }
+        );
+        if (!record) {
+            return res.status(404).json({ message: 'No active clock-in session found' });
+        }
+        if (record.activeBreakStartMs !== null) {
+            return res.status(409).json({ message: 'Already on break' });
+        }
+        const updated = await AttendanceModel.findByIdAndUpdate(
+            record._id,
+            { activeBreakStartMs: Date.now() },
+            { new: true }
+        );
+        return res.status(200).json({ message: 'Break started', record: updated });
+    } catch (error) {
+        return res.status(500).json({ message: 'Internal server error', error: error.message });
+    }
+}
+
+async function endBreak(req, res) {
+    try {
+        const userId = req.user.userId;
+        const record = await AttendanceModel.findOne(
+            { userId, clockOutMs: null },
+            null,
+            { sort: { clockInMs: -1 } }
+        );
+        if (!record) {
+            return res.status(404).json({ message: 'No active clock-in session found' });
+        }
+        if (record.activeBreakStartMs === null) {
+            return res.status(409).json({ message: 'Not currently on break' });
+        }
+        const breakDurationSec = Math.max(0, Math.floor((Date.now() - record.activeBreakStartMs) / 1000));
+        const newAccumulated   = (record.accumulatedBreakSec || 0) + breakDurationSec;
+        const updated = await AttendanceModel.findByIdAndUpdate(
+            record._id,
+            { activeBreakStartMs: null, accumulatedBreakSec: newAccumulated },
+            { new: true }
+        );
+        return res.status(200).json({ message: 'Break ended', record: updated });
+    } catch (error) {
+        return res.status(500).json({ message: 'Internal server error', error: error.message });
+    }
+}
+
 async function getTodayStatus(req, res) {
     try {
         const userId = req.user.userId;
-        const today = localDateString();
-        const record = await AttendanceModel.findOne({ userId, date: today, clockOutMs: null });
+        const record = await AttendanceModel.findOne(
+            { userId, clockOutMs: null },
+            null,
+            { sort: { clockInMs: -1 } }
+        );
         return res.status(200).json({ record: record || null });
     } catch (error) {
         return res.status(500).json({ message: 'Internal server error', error: error.message });
@@ -144,7 +217,16 @@ async function getTodayStatus(req, res) {
 async function getMyAttendance(req, res) {
     try {
         const userId = req.user.userId;
-        const records = await AttendanceModel.find({ userId }).sort({ date: -1, clockInMs: -1 });
+        const { year, month } = req.query;
+
+        const filter = { userId };
+        if (year && month) {
+            const y = String(year).padStart(4, '0');
+            const m = String(month).padStart(2, '0');
+            filter.date = { $gte: `${y}-${m}-01`, $lte: `${y}-${m}-31` };
+        }
+
+        const records = await AttendanceModel.find(filter).sort({ date: -1, clockInMs: -1 });
         return res.status(200).json({ records });
     } catch (error) {
         return res.status(500).json({ message: 'Internal server error', error: error.message });
@@ -153,11 +235,36 @@ async function getMyAttendance(req, res) {
 
 async function getAllAttendance(req, res) {
     try {
-        const records = await AttendanceModel.find().sort({ date: -1, clockInMs: -1 });
+        const { year, month } = req.query;
+
+        const filter = {};
+        if (year && month) {
+            const y = String(year).padStart(4, '0');
+            const m = String(month).padStart(2, '0');
+            filter.date = { $gte: `${y}-${m}-01`, $lte: `${y}-${m}-31` };
+        }
+
+        const records = await AttendanceModel.find(filter).sort({ date: -1, clockInMs: -1 });
         return res.status(200).json({ records });
     } catch (error) {
         return res.status(500).json({ message: 'Internal server error', error: error.message });
     }
 }
 
-module.exports = { clockIn, clockOut, getTodayStatus, getMyAttendance, getAllAttendance };
+async function updateRemarks(req, res) {
+    try {
+        const { id } = req.params;
+        const { adminRemarks } = req.body;
+        const record = await AttendanceModel.findByIdAndUpdate(
+            id,
+            { adminRemarks: adminRemarks ?? null },
+            { new: true }
+        );
+        if (!record) return res.status(404).json({ message: 'Record not found' });
+        return res.status(200).json({ message: 'Remarks updated', record });
+    } catch (error) {
+        return res.status(500).json({ message: 'Internal server error', error: error.message });
+    }
+}
+
+module.exports = { clockIn, clockOut, startBreak, endBreak, getTodayStatus, getMyAttendance, getAllAttendance, updateRemarks };

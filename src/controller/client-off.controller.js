@@ -1,7 +1,7 @@
 const ClientOffModel    = require('../model/client-off.model');
 const UserModel         = require('../model/user.model');
 const NotificationModel = require('../model/notification.model');
-const { sendClientOffStatusEmail } = require('../services/email.service');
+const { sendClientOffStatusEmail, sendClientOffRequestAdminEmail } = require('../services/email.service');
 
 async function submitClientOff(req, res) {
     try {
@@ -46,6 +46,30 @@ async function submitClientOff(req, res) {
             reason       : reason.trim(),
         });
 
+        UserModel.find({ role: 'admin' }).select('email userName')
+            .then(admins => {
+                if (!admins.length) {
+                    console.warn('[Email] No admins found for client off request notification');
+                    return;
+                }
+                return Promise.all(
+                    admins.map(admin =>
+                        sendClientOffRequestAdminEmail({
+                            to           : admin.email,
+                            adminName    : admin.userName,
+                            employeeName : user.userName,
+                            employeeEmail: user.email,
+                            department   : user.department || 'N/A',
+                            date,
+                            reason       : reason.trim(),
+                            adminId      : admin._id.toString(),
+                            requestId    : record._id.toString(),
+                        }).catch(err => console.error(`[Email] Client Off admin notify failed for ${admin.email}:`, err.message))
+                    )
+                );
+            })
+            .catch(err => console.error('[Email] Admin fetch for client off request notify failed:', err.message));
+
         return res.status(201).json({
             message  : 'Client Off request submitted successfully',
             clientOff: record,
@@ -85,20 +109,26 @@ async function reviewClientOff(req, res) {
 
         const record = await ClientOffModel.findById(id);
         if (!record) return res.status(404).json({ message: 'Client Off request not found' });
+        if (record.status === 'Expired') {
+            return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
+        }
         if (record.status !== 'Pending') {
             return res.status(409).json({ message: 'This request has already been reviewed' });
         }
 
         const admin   = await UserModel.findById(req.user.userId).select('userName');
-        const updated = await ClientOffModel.findByIdAndUpdate(
-            id,
-            {
-                status,
-                reviewedBy: admin?.userName || 'Admin',
-                reviewedAt: new Date(),
-            },
+        const updated = await ClientOffModel.findOneAndUpdate(
+            { _id: id, status: 'Pending' },
+            { status, reviewedBy: admin?.userName || 'Admin', reviewedAt: new Date() },
             { new: true }
         );
+        if (!updated) {
+            const current = await ClientOffModel.findById(id);
+            if (current?.status === 'Expired') {
+                return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
+            }
+            return res.status(409).json({ message: 'This request was just actioned by another session. Please refresh.' });
+        }
 
         sendClientOffStatusEmail({
             to          : record.employeeEmail,

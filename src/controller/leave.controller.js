@@ -1,7 +1,7 @@
 const LeaveModel         = require('../model/leave.model');
 const UserModel          = require('../model/user.model');
 const NotificationModel  = require('../model/notification.model');
-const { sendLeaveStatusEmail } = require('../services/email.service');
+const { sendLeaveStatusEmail, sendLeaveRequestAdminEmail } = require('../services/email.service');
 const { syncLeaveRequestToSnow, syncEmployeeToSnow } = require('../services/servicenow.service');
 
 const INITIAL_LEAVE_BALANCE = 12;
@@ -67,6 +67,32 @@ async function applyLeave(req, res) {
             days,
             reason: reason.trim(),
         });
+
+        UserModel.find({ role: 'admin' }).select('email userName')
+            .then(admins => {
+                if (!admins.length) {
+                    console.warn('[Email] No admins found for leave request notification');
+                    return;
+                }
+                return Promise.all(
+                    admins.map(admin =>
+                        sendLeaveRequestAdminEmail({
+                            to           : admin.email,
+                            adminName    : admin.userName,
+                            employeeName : user.userName,
+                            employeeEmail: user.email,
+                            leaveType,
+                            fromDate,
+                            untilDate,
+                            days,
+                            reason       : reason.trim(),
+                            adminId      : admin._id.toString(),
+                            requestId    : leave._id.toString(),
+                        }).catch(err => console.error(`[Email] Leave admin notify failed for ${admin.email}:`, err.message))
+                    )
+                );
+            })
+            .catch(err => console.error('[Email] Admin fetch for leave request notify failed:', err.message));
 
         const _leaveId  = leave._id;
         const _leaveDoc = leave;
@@ -147,16 +173,26 @@ async function reviewLeave(req, res) {
 
         const leave = await LeaveModel.findById(id);
         if (!leave) return res.status(404).json({ message: 'Leave request not found' });
+        if (leave.status === 'Expired') {
+            return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
+        }
         if (leave.status !== 'Pending') {
             return res.status(409).json({ message: 'This request has already been reviewed' });
         }
 
         const admin   = await UserModel.findById(req.user.userId).select('userName');
-        const updated = await LeaveModel.findByIdAndUpdate(
-            id,
+        const updated = await LeaveModel.findOneAndUpdate(
+            { _id: id, status: 'Pending' },
             { status, reviewedBy: admin?.userName || 'Admin', reviewedAt: new Date() },
             { new: true }
         );
+        if (!updated) {
+            const current = await LeaveModel.findById(id);
+            if (current?.status === 'Expired') {
+                return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
+            }
+            return res.status(409).json({ message: 'This request was just actioned by another session. Please refresh.' });
+        }
 
         const _existingSnowId = updated.snowLeaveId ?? null;
         const _updatedDoc     = updated;

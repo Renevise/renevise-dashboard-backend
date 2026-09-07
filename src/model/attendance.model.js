@@ -39,6 +39,14 @@ const attendanceSchema = new mongoose.Schema(
             type: Number,
             default: 0,
         },
+        activeBreakStartMs: {
+            type: Number,
+            default: null,
+        },
+        accumulatedBreakSec: {
+            type: Number,
+            default: 0,
+        },
         shiftDurationMins: {
             type: Number,
             default: 0,
@@ -61,8 +69,25 @@ const attendanceSchema = new mongoose.Schema(
             enum: ['office', 'remote'],
             default: 'office',
         },
+        autoClockOut: {
+            type: Boolean,
+            default: false,
+        },
+        isLate: {
+            type: Boolean,
+            default: false,
+        },
+        adminRemarks: {
+            type: String,
+            default: null,
+        },
     },
     { timestamps: true }
 );
+
+attendanceSchema.index({ userId: 1, date: -1 });
+attendanceSchema.index({ userId: 1, date: 1, clockOutMs: 1 });
+attendanceSchema.index({ userId: 1, clockOutMs: 1, clockInMs: -1 });
+attendanceSchema.index({ date: -1 });
 
 module.exports = mongoose.model('Attendance', attendanceSchema);
