@@ -41,6 +41,15 @@ async function submitCorrection(req, res) {
                     console.warn('[Email] No admins found for correction request notification');
                     return;
                 }
+                admins.forEach(admin => {
+                    NotificationModel.create({
+                        userId      : admin._id,
+                        correctionId: correction._id,
+                        type        : 'correction_submitted',
+                        title       : 'New Correction Request',
+                        message     : `${user.userName} submitted an attendance correction for ${date} (${clockIn} – ${clockOut}).`,
+                    }).catch(err => console.error('[Notification] Admin correction notify failed:', err.message));
+                });
                 return Promise.all(
                     admins.map(admin =>
                         sendCorrectionRequestAdminEmail({

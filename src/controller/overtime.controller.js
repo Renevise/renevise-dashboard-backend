@@ -62,6 +62,15 @@ async function submitOvertime(req, res) {
                     console.warn('[Email] No admins found for overtime request notification');
                     return;
                 }
+                admins.forEach(admin => {
+                    NotificationModel.create({
+                        userId    : admin._id,
+                        overtimeId: overtime._id,
+                        type      : 'overtime_submitted',
+                        title     : 'New Overtime Request',
+                        message   : `${submitter.userName} submitted an overtime request for ${date} (${hours}h).`,
+                    }).catch(err => console.error('[Notification] Admin overtime notify failed:', err.message));
+                });
                 return Promise.all(
                     admins.map(admin =>
                         sendOvertimeRequestAdminEmail({

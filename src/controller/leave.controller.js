@@ -74,6 +74,15 @@ async function applyLeave(req, res) {
                     console.warn('[Email] No admins found for leave request notification');
                     return;
                 }
+                admins.forEach(admin => {
+                    NotificationModel.create({
+                        userId : admin._id,
+                        leaveId: leave._id,
+                        type   : 'leave_submitted',
+                        title  : 'New Leave Request',
+                        message: `${user.userName} submitted a ${leaveType} leave request from ${fromDate} to ${untilDate} (${days} day${days !== 1 ? 's' : ''}).`,
+                    }).catch(err => console.error('[Notification] Admin leave notify failed:', err.message));
+                });
                 return Promise.all(
                     admins.map(admin =>
                         sendLeaveRequestAdminEmail({
