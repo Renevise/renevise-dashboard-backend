@@ -1,13 +1,7 @@
 const AttendanceModel = require('../model/attendance.model');
 const UserModel = require('../model/user.model');
 const { postAttendanceToSnow } = require('../services/servicenow.service');
-
-const DEPT_CUTOFF_MINUTES = {
-    'ServiceNow':          17 * 60 + 45,  
-    'AI Content Creation': 17 * 60 + 45,  
-    'Web Development':     16 * 60 + 15,  
-    'App Development':     16 * 60 + 15,  
-};
+const { DEPT_CUTOFF_MINUTES, getShiftEndMs } = require('../config/shiftConfig');
 const MIN_HOURS_FULL_DAY = 8.0;
 const MIN_HOURS_HALF_DAY = 4.5;
 
@@ -29,10 +23,13 @@ function formatTime(tsMs) {
     });
 }
 
-function determineStatus(clockInMs, workedHours, department) {
-    const cutoff = DEPT_CUTOFF_MINUTES[department] ?? DEPT_CUTOFF_MINUTES['ServiceNow'];
-    const isLate = pktMinutes(clockInMs) > cutoff;
+function determineStatus(clockInMs, actualClockOutMs, workedHours, department) {
+    const cutoff     = DEPT_CUTOFF_MINUTES[department] ?? DEPT_CUTOFF_MINUTES['ServiceNow'];
+    const isLate     = pktMinutes(clockInMs) > cutoff;
+    const shiftEndMs = getShiftEndMs(clockInMs, department);
+    const leftEarly  = actualClockOutMs < shiftEndMs;
     if (workedHours >= MIN_HOURS_FULL_DAY) return isLate ? 'Late' : 'Present';
+    if (!leftEarly)                        return isLate ? 'Late' : 'Present';
     if (workedHours >= MIN_HOURS_HALF_DAY) return 'Early Leave';
     return 'Half Day';
 }
@@ -95,20 +92,23 @@ async function clockOut(req, res) {
         const user = await UserModel.findById(userId).select('department email serviceNowSysId');
         const department = user?.department ?? 'ServiceNow';
 
-        const clockOutMs = Date.now();
+        const actualClockOutMs = Date.now();
+        const shiftEndMs       = getShiftEndMs(record.clockInMs, department);
+        const calcMs           = Math.min(actualClockOutMs, shiftEndMs);
 
-        // Compute break entirely from DB — include any still-active break session
+        // Compute break from DB — cap active break at shift end
         const activeBreakSec = record.activeBreakStartMs
-            ? Math.max(0, Math.floor((clockOutMs - record.activeBreakStartMs) / 1000))
+            ? Math.max(0, Math.floor((calcMs - record.activeBreakStartMs) / 1000))
             : 0;
-        const totalBreakSec  = (record.accumulatedBreakSec || 0) + activeBreakSec;
+        const totalBreakSec     = (record.accumulatedBreakSec || 0) + activeBreakSec;
 
-        const rawSec = Math.max(0, Math.floor((clockOutMs - record.clockInMs) / 1000));
-        const workedSec = Math.max(0, rawSec - totalBreakSec);
-        const workedHours = parseFloat((workedSec / 3600).toFixed(2));
-        const breakMinutes = Math.round(totalBreakSec / 60);
-        const shiftDurationMins = Math.floor((clockOutMs - record.clockInMs) / 60000);
-        const status = determineStatus(record.clockInMs, workedHours, department);
+        const rawSec            = Math.max(0, Math.floor((calcMs - record.clockInMs) / 1000));
+        const workedSec         = Math.max(0, rawSec - totalBreakSec);
+        const workedHours       = parseFloat((workedSec / 3600).toFixed(2));
+        const breakMinutes      = Math.round(totalBreakSec / 60);
+        const shiftDurationMins = Math.floor((calcMs - record.clockInMs) / 60000);
+        const clockOutMs        = actualClockOutMs;
+        const status            = determineStatus(record.clockInMs, actualClockOutMs, workedHours, department);
 
         const isLate = pktMinutes(record.clockInMs) > (DEPT_CUTOFF_MINUTES[department] ?? DEPT_CUTOFF_MINUTES['ServiceNow']);
 

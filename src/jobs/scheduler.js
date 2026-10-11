@@ -14,14 +14,9 @@ const {
 } = require('../services/email.service');
 const { postAttendanceToSnow } = require('../services/servicenow.service');
 
-// ── Auto clock-out helpers (mirrors attendance.controller.js) ────────────────
+// ── Auto clock-out helpers ────────────────────────────────────────────────────
 
-const AUTO_DEPT_CUTOFF = {
-    'ServiceNow':          17 * 60 + 45,
-    'AI Content Creation': 17 * 60 + 45,
-    'Web Development':     16 * 60 + 15,
-    'App Development':     16 * 60 + 15,
-};
+const { DEPT_CUTOFF_MINUTES: AUTO_DEPT_CUTOFF, getShiftEndMs } = require('../config/shiftConfig');
 const AUTO_MIN_FULL_DAY = 8.0;
 const AUTO_MIN_HALF_DAY = 4.5;
 
@@ -36,10 +31,13 @@ function autoFormatTime(tsMs) {
     });
 }
 
-function autoDetermineStatus(clockInMs, workedHours, department) {
-    const cutoff = AUTO_DEPT_CUTOFF[department] ?? AUTO_DEPT_CUTOFF['ServiceNow'];
-    const isLate = autoPktMinutes(clockInMs) > cutoff;
+function autoDetermineStatus(clockInMs, actualClockOutMs, workedHours, department) {
+    const cutoff     = AUTO_DEPT_CUTOFF[department] ?? AUTO_DEPT_CUTOFF['ServiceNow'];
+    const isLate     = autoPktMinutes(clockInMs) > cutoff;
+    const shiftEndMs = getShiftEndMs(clockInMs, department);
+    const leftEarly  = actualClockOutMs < shiftEndMs;
     if (workedHours >= AUTO_MIN_FULL_DAY) return isLate ? 'Late' : 'Present';
+    if (!leftEarly)                       return isLate ? 'Late' : 'Present';
     if (workedHours >= AUTO_MIN_HALF_DAY) return 'Early Leave';
     return 'Half Day';
 }
@@ -390,20 +388,25 @@ async function runAutoClockOutJob() {
 
         for (const record of staleSessions) {
             try {
-                const clockOutMs = record.clockInMs + 14 * 3600 * 1000;
+                const user           = await UserModel.findById(record.userId).select('department email serviceNowSysId');
+                const department     = user?.department ?? 'ServiceNow';
+
+                const rawAutoMs      = record.clockInMs + 14 * 3600 * 1000;
+                const shiftEndMs     = getShiftEndMs(record.clockInMs, department);
+                const calcMs         = Math.min(rawAutoMs, shiftEndMs);
+                const clockOutMs     = rawAutoMs;
 
                 const activeBreakSec = record.activeBreakStartMs
-                    ? Math.max(0, Math.floor((clockOutMs - record.activeBreakStartMs) / 1000))
+                    ? Math.max(0, Math.floor((calcMs - record.activeBreakStartMs) / 1000))
                     : 0;
                 const totalBreakSec     = (record.accumulatedBreakSec || 0) + activeBreakSec;
-                const workedSec         = Math.max(0, 14 * 3600 - totalBreakSec);
+                const totalWindowSec    = Math.max(0, Math.floor((calcMs - record.clockInMs) / 1000));
+                const workedSec         = Math.max(0, totalWindowSec - totalBreakSec);
                 const workedHours       = parseFloat((workedSec / 3600).toFixed(2));
                 const breakMinutes      = Math.round(totalBreakSec / 60);
-                const shiftDurationMins = 840;
-
-                const user       = await UserModel.findById(record.userId).select('department email serviceNowSysId');
-                const department = user?.department ?? 'ServiceNow';
-                const status     = autoDetermineStatus(record.clockInMs, workedHours, department);
+                const shiftDurationMins = Math.floor((calcMs - record.clockInMs) / 60000);
+                const status            = autoDetermineStatus(record.clockInMs, rawAutoMs, workedHours, department);
+                const isLate            = autoPktMinutes(record.clockInMs) > (AUTO_DEPT_CUTOFF[department] ?? AUTO_DEPT_CUTOFF['ServiceNow']);
 
                 await AttendanceModel.findByIdAndUpdate(record._id, {
                     clockOut           : autoFormatTime(clockOutMs),
@@ -413,6 +416,7 @@ async function runAutoClockOutJob() {
                     workedSeconds      : workedSec,
                     workedHours,
                     status,
+                    isLate,
                     autoClockOut       : true,
                     activeBreakStartMs : null,
                     accumulatedBreakSec: totalBreakSec,
