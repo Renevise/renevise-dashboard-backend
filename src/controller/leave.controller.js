@@ -6,6 +6,32 @@ const { syncLeaveRequestToSnow, syncEmployeeToSnow } = require('../services/serv
 
 const INITIAL_LEAVE_BALANCE = 12;
 
+// Count Mon–Fri days between two ISO date strings (inclusive). Sat/Sun are skipped.
+function countWorkingDays(fromDateStr, untilDateStr) {
+    const cur   = new Date(fromDateStr  + 'T00:00:00');
+    const until = new Date(untilDateStr + 'T00:00:00');
+    let count   = 0;
+    while (cur <= until) {
+        const dow = cur.getDay();
+        if (dow !== 0 && dow !== 6) count++;
+        cur.setDate(cur.getDate() + 1);
+    }
+    return count;
+}
+
+// Return a plain object with days recomputed from the date range.
+// If the stored value differs (pre-fix record), patch the DB silently in the background.
+function withCorrectedDays(doc) {
+    const obj = doc.toObject ? doc.toObject() : { ...doc };
+    const wd  = countWorkingDays(obj.fromDate, obj.untilDate);
+    if (obj.days !== wd) {
+        LeaveModel.findByIdAndUpdate(obj._id, { days: wd })
+            .catch(err => console.warn(`[Leave] days auto-correct failed for ${obj._id}:`, err.message));
+    }
+    obj.days = wd;
+    return obj;
+}
+
 function calcLeaveStats(leaves, targetYear, targetMonth) {
     const pad      = n => String(n).padStart(2, '0');
     const now      = new Date();
@@ -18,8 +44,9 @@ function calcLeaveStats(leaves, targetYear, targetMonth) {
         const until = new Date(l.untilDate + 'T00:00:00');
         const cur   = new Date(from);
         while (cur <= until) {
+            const dow    = cur.getDay();
             const curStr = `${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`;
-            if (curStr <= todayStr) {         
+            if (dow !== 0 && dow !== 6 && curStr <= todayStr) {
                 const y = cur.getFullYear();
                 const m = cur.getMonth() + 1;
                 if (y === targetYear) {
@@ -53,9 +80,10 @@ async function applyLeave(req, res) {
             return res.status(409).json({ message: 'A pending leave request already exists for these dates' });
         }
 
-        const days = Math.round(
-            (new Date(untilDate) - new Date(fromDate)) / 86400000
-        ) + 1;
+        const days = countWorkingDays(fromDate, untilDate);
+        if (days < 1) {
+            return res.status(400).json({ message: 'The selected dates contain no working days. Saturday and Sunday are not chargeable leave days.' });
+        }
 
         const leave = await LeaveModel.create({
             userId,
@@ -151,9 +179,9 @@ async function getMyLeaves(req, res) {
         const balance = Math.max(0, INITIAL_LEAVE_BALANCE - yearlyUsed);
 
         return res.status(200).json({
-            leaves,
+            leaves     : leaves.map(withCorrectedDays),
             balance,
-            yearlyTotal : INITIAL_LEAVE_BALANCE,
+            yearlyTotal: INITIAL_LEAVE_BALANCE,
             yearlyUsed,
             monthlyUsed,
         });
@@ -165,7 +193,7 @@ async function getMyLeaves(req, res) {
 async function getAllLeaves(req, res) {
     try {
         const leaves = await LeaveModel.find().sort({ createdAt: -1 });
-        return res.status(200).json({ leaves });
+        return res.status(200).json({ leaves: leaves.map(withCorrectedDays) });
     } catch (error) {
         return res.status(500).json({ message: 'Internal server error', error: error.message });
     }
@@ -217,13 +245,15 @@ async function reviewLeave(req, res) {
             })
             .catch(err => console.error(`[LeaveSync] Leave review sync failed: ${err.message}`));
 
+        const reviewDays = countWorkingDays(leave.fromDate, leave.untilDate);
+
         sendLeaveStatusEmail({
             to          : leave.email,
             employeeName: leave.employee,
             leaveType   : leave.leaveType,
             fromDate    : leave.fromDate,
             untilDate   : leave.untilDate,
-            days        : leave.days,
+            days        : reviewDays,
             status,
         }).catch(err => console.error('Email send failed:', err.message));
 
@@ -232,12 +262,12 @@ async function reviewLeave(req, res) {
             leaveId: leave._id,
             type   : status === 'Approved' ? 'leave_approved' : 'leave_rejected',
             title  : `Leave Request ${status}`,
-            message: `Your ${leave.leaveType} leave from ${leave.fromDate} to ${leave.untilDate} (${leave.days} day${leave.days !== 1 ? 's' : ''}) has been ${status.toLowerCase()}.`,
+            message: `Your ${leave.leaveType} leave from ${leave.fromDate} to ${leave.untilDate} (${reviewDays} day${reviewDays !== 1 ? 's' : ''}) has been ${status.toLowerCase()}.`,
         }).catch(err => console.error('Notification create failed:', err.message));
 
         return res.status(200).json({
             message: `Leave ${status.toLowerCase()} successfully`,
-            leave: updated,
+            leave  : withCorrectedDays(updated),
         });
     } catch (error) {
         return res.status(500).json({ message: 'Internal server error', error: error.message });

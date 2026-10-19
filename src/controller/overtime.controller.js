@@ -161,9 +161,6 @@ async function reviewOvertime(req, res) {
         if (!overtime) {
             return res.status(404).json({ message: 'Overtime request not found' });
         }
-        if (overtime.status === 'Expired') {
-            return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
-        }
         if (overtime.status !== 'Pending') {
             return res.status(409).json({ message: 'This request has already been reviewed' });
         }
@@ -175,10 +172,6 @@ async function reviewOvertime(req, res) {
             { new: true }
         );
         if (!updated) {
-            const current = await OvertimeModel.findById(id);
-            if (current?.status === 'Expired') {
-                return res.status(410).json({ message: 'This request has expired and can no longer be reviewed' });
-            }
             return res.status(409).json({ message: 'This request was just actioned by another session. Please refresh.' });
         }
 

@@ -102,38 +102,6 @@ async function runExpiryJob() {
         console.error('[Scheduler] Leave expiry job error:', e.message);
     }
 
-    // ── Overtime: expire when date < today ──
-    try {
-        const expiredOvertimes = await OvertimeModel.find({ status: 'Pending', date: { $lt: todayStr } });
-        for (const ot of expiredOvertimes) {
-            const updated = await OvertimeModel.findOneAndUpdate(
-                { _id: ot._id, status: 'Pending' },
-                { status: 'Expired' },
-                { new: true }
-            );
-            if (!updated) continue;
-
-            NotificationModel.create({
-                userId    : ot.userId,
-                overtimeId: ot._id,
-                type      : 'overtime_expired',
-                title     : 'Overtime Request Expired',
-                message   : `Your overtime request for ${ot.date} (${ot.extraHours}h) was automatically expired — no decision was made before the end of the request date.`,
-            }).catch(e => console.error('[Scheduler] Overtime expiry notification failed:', e.message));
-
-            sendRequestExpiredEmployeeEmail({
-                to          : ot.email,
-                employeeName: ot.employee,
-                requestType : 'Overtime',
-                requestDate : ot.date,
-            }).catch(e => console.error('[Scheduler] Overtime expiry email failed:', e.message));
-
-            console.log(`[Scheduler] Overtime ${ot._id} expired (date: ${ot.date})`);
-        }
-    } catch (e) {
-        console.error('[Scheduler] Overtime expiry job error:', e.message);
-    }
-
     // ── Client Off: expire when date < today ──
     try {
         const expiredClientOffs = await ClientOffModel.find({ status: 'Pending', date: { $lt: todayStr } });
