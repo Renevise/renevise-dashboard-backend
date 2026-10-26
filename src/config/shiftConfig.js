@@ -4,6 +4,7 @@
 const DEPT_CUTOFF_MINUTES = {
     'ServiceNow':          17 * 60 + 45,  // 5:45 PM PKT
     'AI Content Creation': 17 * 60 + 45,
+    'Digital Marketing':   17 * 60 + 45,
     'Web Development':     16 * 60 + 15,  // 4:15 PM PKT
     'App Development':     16 * 60 + 15,
 };
@@ -12,6 +13,7 @@ const DEPT_CUTOFF_MINUTES = {
 const DEPT_SHIFT_START_MINUTES = {
     'ServiceNow':          17 * 60 + 30,  // 5:30 PM
     'AI Content Creation': 17 * 60 + 30,
+    'Digital Marketing':   17 * 60 + 30,
     'Web Development':     16 * 60,       // 4:00 PM
     'App Development':     16 * 60,
 };
@@ -20,6 +22,7 @@ const DEPT_SHIFT_START_MINUTES = {
 const DEPT_SHIFT_DURATION_SEC = {
     'ServiceNow':          9 * 3600,  // ends 2:30 AM
     'AI Content Creation': 9 * 3600,
+    'Digital Marketing':   9 * 3600,
     'Web Development':     8 * 3600,  // ends midnight
     'App Development':     8 * 3600,
 };

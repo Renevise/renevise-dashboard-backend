@@ -11,8 +11,9 @@ function humanDate(isoDate) {
 }
 
 async function fanoutToEmployees(companyOff) {
-    const employees = await UserModel.find({ role: 'employee' }).select('email userName');
-    if (employees.length === 0) return;
+    const allUsers  = await UserModel.find({ role: { $in: ['employee', 'admin'] } }).select('email userName role');
+    const employees = allUsers.filter(u => u.role === 'employee');
+    if (allUsers.length === 0) return;
 
     const fromLabel  = humanDate(companyOff.fromDate);
     const untilLabel = humanDate(companyOff.untilDate);
@@ -23,17 +24,19 @@ async function fanoutToEmployees(companyOff) {
         ? `Company off on ${fromLabel}. Reason: ${companyOff.reason}`
         : `Company off from ${fromLabel} to ${untilLabel}. Reason: ${companyOff.reason}`;
 
-    await NotificationModel.insertMany(
-        employees.map(emp => ({
-            userId      : emp._id,
-            companyOffId: companyOff._id,
-            type        : 'company_off',
-            title,
-            message,
-        }))
-    );
+    if (employees.length > 0) {
+        await NotificationModel.insertMany(
+            employees.map(emp => ({
+                userId      : emp._id,
+                companyOffId: companyOff._id,
+                type        : 'company_off',
+                title,
+                message,
+            }))
+        );
+    }
 
-    for (const emp of employees) {
+    for (const emp of allUsers) {
         sendCompanyOffEmail({
             to          : emp.email,
             employeeName: emp.userName,

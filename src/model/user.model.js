@@ -43,7 +43,7 @@ const userSchema = new mongoose.Schema(
 
     department: {
       type: String,
-      enum: ["ServiceNow", "Web Development", "App Development", "AI Content Creation"],
+      enum: ["ServiceNow", "Web Development", "App Development", "AI Content Creation", "Digital Marketing"],
       default: null,
     },
 
