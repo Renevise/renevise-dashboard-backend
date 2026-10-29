@@ -217,7 +217,7 @@ async function runReminderJob() {
                             requestDate    : `${leave.fromDate} to ${leave.untilDate}`,
                             deadlineDateStr: deadline,
                             urgency,
-                        }).catch(e => console.error(`[Scheduler] Leave reminder email failed (${admin.email}):`, e.message))
+                        }).catch(e => console.error('[Scheduler] Leave reminder email failed:', e.message))
                     )
                 );
                 await LeaveModel.findByIdAndUpdate(leave._id, { $addToSet: { remindersSent: marker } });
@@ -252,7 +252,7 @@ async function runReminderJob() {
                             requestDate    : `${ot.date} (${ot.extraHours}h)`,
                             deadlineDateStr: ot.date,
                             urgency,
-                        }).catch(e => console.error(`[Scheduler] Overtime reminder email failed (${admin.email}):`, e.message))
+                        }).catch(e => console.error('[Scheduler] Overtime reminder email failed:', e.message))
                     )
                 );
                 await OvertimeModel.findByIdAndUpdate(ot._id, { $addToSet: { remindersSent: marker } });
@@ -287,7 +287,7 @@ async function runReminderJob() {
                             requestDate    : co.date,
                             deadlineDateStr: co.date,
                             urgency,
-                        }).catch(e => console.error(`[Scheduler] Client Off reminder email failed (${admin.email}):`, e.message))
+                        }).catch(e => console.error('[Scheduler] Client Off reminder email failed:', e.message))
                     )
                 );
                 await ClientOffModel.findByIdAndUpdate(co._id, { $addToSet: { remindersSent: marker } });
@@ -327,7 +327,7 @@ async function runReminderJob() {
                             requestDate    : corr.date,
                             deadlineDateStr: deadline,
                             urgency,
-                        }).catch(e => console.error(`[Scheduler] Correction reminder email failed (${admin.email}):`, e.message))
+                        }).catch(e => console.error('[Scheduler] Correction reminder email failed:', e.message))
                     )
                 );
                 await CorrectionModel.findByIdAndUpdate(corr._id, { $addToSet: { remindersSent: marker } });

@@ -34,7 +34,7 @@ async function sendOtp(req, res) {
 
         return res.status(200).json({ message: 'If this email is registered, an OTP has been sent.' });
     } catch (error) {
-        console.error('sendOtp error:', error);
+        console.error('sendOtp error:', error.message);
         return res.status(500).json({ message: 'Internal server error' });
     }
 }

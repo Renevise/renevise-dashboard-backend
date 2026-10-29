@@ -64,7 +64,7 @@ async function submitClientOff(req, res) {
                             reason       : reason.trim(),
                             adminId      : admin._id.toString(),
                             requestId    : record._id.toString(),
-                        }).catch(err => console.error(`[Email] Client Off admin notify failed for ${admin.email}:`, err.message))
+                        }).catch(err => console.error('[Email] Client Off admin notify failed:', err.message))
                     )
                 );
             })
@@ -75,7 +75,7 @@ async function submitClientOff(req, res) {
             clientOff: record,
         });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -85,7 +85,7 @@ async function getMyClientOffs(req, res) {
         const records = await ClientOffModel.find({ userId }).sort({ createdAt: -1 });
         return res.status(200).json({ clientOffs: records });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -94,7 +94,7 @@ async function getAllClientOffs(req, res) {
         const records = await ClientOffModel.find().sort({ createdAt: -1 });
         return res.status(200).json({ clientOffs: records });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -151,7 +151,7 @@ async function reviewClientOff(req, res) {
             clientOff: updated,
         });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 

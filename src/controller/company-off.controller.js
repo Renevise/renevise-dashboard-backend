@@ -44,7 +44,7 @@ async function fanoutToEmployees(companyOff) {
             untilDate   : untilLabel,
             reason      : companyOff.reason,
         }).catch(err =>
-            console.error(`[CompanyOff] Email to ${emp.email} failed:`, err.message)
+            console.error('[CompanyOff] Email to employee failed:', err.message)
         );
     }
 }
@@ -83,7 +83,7 @@ async function createCompanyOff(req, res) {
 
         return res.status(201).json({ message: 'Company off created successfully', companyOff });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -92,7 +92,7 @@ async function getCompanyOffs(req, res) {
         const companyOffs = await CompanyOffModel.find().sort({ fromDate: -1 });
         return res.status(200).json({ companyOffs });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -103,7 +103,7 @@ async function deleteCompanyOff(req, res) {
         if (!record) return res.status(404).json({ message: 'Company off record not found' });
         return res.status(200).json({ message: 'Company off deleted successfully' });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 

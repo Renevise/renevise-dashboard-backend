@@ -42,7 +42,7 @@ async function createEmployee(req, res) {
 
         res.status(201).json({ message: "User created successfully" });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -51,7 +51,7 @@ async function getAllEmployees(req, res) {
         const fetchedData = await userModel.find().select("-password");
         res.status(200).json({ message: "Employees fetched successfully", employees: fetchedData });
     } catch (error) {
-        res.status(500).json({ message: "Internal server error", error: error.message });
+        res.status(500).json({ message: "Internal server error" });
     }
 }
 
@@ -62,7 +62,7 @@ async function getSingleEmployee(req, res) {
         if (!user) return res.status(404).json({ message: 'User not found' });
         res.status(200).json({ message: 'user fetched successfully', user });
     } catch (error) {
-        res.status(500).json({ message: "Internal server error", error: error.message });
+        res.status(500).json({ message: "Internal server error" });
     }
 }
 
@@ -97,7 +97,7 @@ async function updateEmployee(req, res) {
 
         return res.status(200).json({ message: "User updated successfully", user: updatedUser });
     } catch (error) {
-        return res.status(500).json({ message: "Internal server error", error: error.message });
+        return res.status(500).json({ message: "Internal server error" });
     }
 }
 
@@ -108,7 +108,7 @@ async function deletedUser(req, res) {
         if (!deleteEmployee) return res.status(404).json({ message: 'User not found' });
         res.status(200).json({ message: 'User deleted successfully' });
     } catch (error) {
-        res.status(500).json({ message: 'Internal server error', error: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -127,7 +127,7 @@ async function getEmployeeNames(req, res) {
             })),
         });
     } catch (error) {
-        res.status(500).json({ message: 'Internal server error', error: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 }
 

@@ -63,7 +63,7 @@ async function submitCorrection(req, res) {
                             reason       : reason.trim(),
                             adminId      : admin._id.toString(),
                             requestId    : correction._id.toString(),
-                        }).catch(err => console.error(`[Email] Correction admin notify failed for ${admin.email}:`, err.message))
+                        }).catch(err => console.error('[Email] Correction admin notify failed:', err.message))
                     )
                 );
             })
@@ -74,7 +74,7 @@ async function submitCorrection(req, res) {
             correction,
         });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -84,7 +84,7 @@ async function getMyCorrections(req, res) {
         const corrections = await CorrectionModel.find({ userId }).sort({ createdAt: -1 });
         return res.status(200).json({ corrections });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -93,7 +93,7 @@ async function getAllCorrections(req, res) {
         const corrections = await CorrectionModel.find().sort({ createdAt: -1 });
         return res.status(200).json({ corrections });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -154,7 +154,7 @@ async function reviewCorrection(req, res) {
             correction: updated,
         });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 

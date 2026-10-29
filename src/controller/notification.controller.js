@@ -7,7 +7,7 @@ async function getMyNotifications(req, res) {
         const unreadCount   = notifications.filter(n => !n.read).length;
         return res.status(200).json({ notifications, unreadCount });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -24,7 +24,7 @@ async function markAsRead(req, res) {
 
         return res.status(200).json({ message: 'Marked as read', notification });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -34,7 +34,7 @@ async function markAllAsRead(req, res) {
         await NotificationModel.updateMany({ userId, read: false }, { read: true });
         return res.status(200).json({ message: 'All notifications marked as read' });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 

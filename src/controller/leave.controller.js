@@ -125,7 +125,7 @@ async function applyLeave(req, res) {
                             reason       : reason.trim(),
                             adminId      : admin._id.toString(),
                             requestId    : leave._id.toString(),
-                        }).catch(err => console.error(`[Email] Leave admin notify failed for ${admin.email}:`, err.message))
+                        }).catch(err => console.error('[Email] Leave admin notify failed:', err.message))
                     )
                 );
             })
@@ -162,7 +162,7 @@ async function applyLeave(req, res) {
 
         return res.status(201).json({ message: 'Leave request submitted successfully', leave });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -186,7 +186,7 @@ async function getMyLeaves(req, res) {
             monthlyUsed,
         });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -195,7 +195,7 @@ async function getAllLeaves(req, res) {
         const leaves = await LeaveModel.find().sort({ createdAt: -1 });
         return res.status(200).json({ leaves: leaves.map(withCorrectedDays) });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -270,7 +270,7 @@ async function reviewLeave(req, res) {
             leave  : withCorrectedDays(updated),
         });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -329,7 +329,7 @@ async function snowWebhookHandler(req, res) {
         });
     } catch (error) {
         console.error('[SnowWebhook] Error:', error.message);
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 

@@ -85,7 +85,7 @@ async function submitOvertime(req, res) {
                             requestedFor : targetUser.userName,
                             adminId      : admin._id.toString(),
                             requestId    : overtime._id.toString(),
-                        }).catch(err => console.error(`[Email] Overtime admin notify failed for ${admin.email}:`, err.message))
+                        }).catch(err => console.error('[Email] Overtime admin notify failed:', err.message))
                     )
                 );
             })
@@ -125,7 +125,7 @@ async function submitOvertime(req, res) {
             overtime,
         });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -135,7 +135,7 @@ async function getMyOvertimes(req, res) {
         const overtimes = await OvertimeModel.find({ userId }).sort({ createdAt: -1 });
         return res.status(200).json({ overtimes });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -144,7 +144,7 @@ async function getAllOvertimes(req, res) {
         const overtimes = await OvertimeModel.find().sort({ createdAt: -1 });
         return res.status(200).json({ overtimes });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -211,7 +211,7 @@ async function reviewOvertime(req, res) {
             overtime: updated,
         });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 

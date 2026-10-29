@@ -1,5 +1,8 @@
 const AttendanceModel = require('../model/attendance.model');
-const UserModel = require('../model/user.model');
+const UserModel       = require('../model/user.model');
+const CompanyOffModel = require('../model/company-off.model');
+const LeaveModel      = require('../model/leave.model');
+const ClientOffModel  = require('../model/client-off.model');
 const { postAttendanceToSnow } = require('../services/servicenow.service');
 const { DEPT_CUTOFF_MINUTES, getShiftEndMs } = require('../config/shiftConfig');
 const MIN_HOURS_FULL_DAY = 8.0;
@@ -71,7 +74,7 @@ async function clockIn(req, res) {
 
         return res.status(201).json({ message: 'Clocked in successfully', record });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -144,7 +147,7 @@ async function clockOut(req, res) {
 
         return res.status(200).json({ message: 'Clocked out successfully', record: updated });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -169,7 +172,7 @@ async function startBreak(req, res) {
         );
         return res.status(200).json({ message: 'Break started', record: updated });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -196,7 +199,7 @@ async function endBreak(req, res) {
         );
         return res.status(200).json({ message: 'Break ended', record: updated });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -210,7 +213,7 @@ async function getTodayStatus(req, res) {
         );
         return res.status(200).json({ record: record || null });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -229,7 +232,7 @@ async function getMyAttendance(req, res) {
         const records = await AttendanceModel.find(filter).sort({ date: -1, clockInMs: -1 });
         return res.status(200).json({ records });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -247,7 +250,7 @@ async function getAllAttendance(req, res) {
         const records = await AttendanceModel.find(filter).sort({ date: -1, clockInMs: -1 });
         return res.status(200).json({ records });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
@@ -263,8 +266,113 @@ async function updateRemarks(req, res) {
         if (!record) return res.status(404).json({ message: 'Record not found' });
         return res.status(200).json({ message: 'Remarks updated', record });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error', error: error.message });
+        return res.status(500).json({ message: 'Internal server error' });
     }
 }
 
-module.exports = { clockIn, clockOut, startBreak, endBreak, getTodayStatus, getMyAttendance, getAllAttendance, updateRemarks };
+async function getTodaySummary(req, res) {
+    try {
+        const pktToday = localDateString(); // actual PKT date right now
+
+        // Accept an optional date query param; fall back to PKT today
+        const rawDate   = req.query.date;
+        const targetDate = (rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate))
+            ? rawDate
+            : pktToday;
+
+        const isToday  = targetDate === pktToday;
+        const isPast   = targetDate < pktToday;
+        // isFuture = !isToday && !isPast (implied below)
+
+        // Current PKT minute only matters for today's cutoff check
+        const nowMin = isToday ? pktMinutes(Date.now()) : 0;
+
+        // Day of week for the target date
+        const [y, m, d] = targetDate.split('-').map(Number);
+        const dow       = new Date(Date.UTC(y, m - 1, d, 12)).getDay(); // 0=Sun, 6=Sat
+        const isWeekday = dow !== 0 && dow !== 6;
+
+        // All non-admin employees
+        const employees = await UserModel.find({ role: 'employee' })
+            .select('_id firstName lastName userName department');
+
+        // Attendance records for the target date
+        const attRecords = await AttendanceModel.find({ date: targetDate });
+        const attMap     = new Map(attRecords.map(r => [String(r.userId), r]));
+
+        // Company off ranges covering the target date
+        const companyOffs  = await CompanyOffModel.find({ fromDate: { $lte: targetDate }, untilDate: { $gte: targetDate } });
+        const isCompanyOff = companyOffs.length > 0;
+
+        // Approved leaves covering the target date
+        const leaves   = await LeaveModel.find({ fromDate: { $lte: targetDate }, untilDate: { $gte: targetDate }, status: 'Approved' });
+        const leaveMap = new Map(leaves.map(l => [String(l.userId), l]));
+
+        // Approved client offs for the target date
+        const clientOffs   = await ClientOffModel.find({ date: targetDate, status: 'Approved' });
+        const clientOffMap = new Map(clientOffs.map(c => [String(c.userId), c]));
+
+        const summary = { present: 0, absent: 0, onLeave: 0, companyOff: 0, clientOff: 0 };
+
+        const employeeList = employees.map(emp => {
+            const userId = String(emp._id);
+            const name   = (emp.firstName && emp.lastName)
+                ? `${emp.firstName} ${emp.lastName}`
+                : emp.userName;
+            const dept   = emp.department ?? 'ServiceNow';
+            const att    = attMap.get(userId);
+
+            // 1. Has clock-in record → Present
+            if (att) {
+                summary.present++;
+                return {
+                    userId,
+                    name,
+                    department: emp.department,
+                    status: 'Present',
+                    clockIn: att.clockIn ?? null,
+                    clockOut: att.clockOut ?? null,
+                    attendanceStatus: att.status ?? 'Present',
+                };
+            }
+
+            // 2. Company Off
+            if (isCompanyOff) {
+                summary.companyOff++;
+                return { userId, name, department: emp.department, status: 'Company Off', clockIn: null, clockOut: null, attendanceStatus: null };
+            }
+
+            // 3. Approved Leave covering the target date
+            if (leaveMap.has(userId)) {
+                summary.onLeave++;
+                return { userId, name, department: emp.department, status: 'On Leave', clockIn: null, clockOut: null, attendanceStatus: null };
+            }
+
+            // 4. Approved Client Off for the target date
+            if (clientOffMap.has(userId)) {
+                summary.clientOff++;
+                return { userId, name, department: emp.department, status: 'Client Off', clockIn: null, clockOut: null, attendanceStatus: null };
+            }
+
+            // 5. Absent logic — only applies on weekdays, never on future dates
+            //    Past date: day is over, no record → definitively Absent
+            //    Today:     cutoff has passed → Absent
+            //    Future:    shift hasn't happened yet → Not Started
+            const cutoffMin = DEPT_CUTOFF_MINUTES[dept] ?? DEPT_CUTOFF_MINUTES['ServiceNow'];
+            const isAbsent  = isWeekday && (isPast || (isToday && nowMin > cutoffMin));
+            if (isAbsent) {
+                summary.absent++;
+                return { userId, name, department: emp.department, status: 'Absent', clockIn: null, clockOut: null, attendanceStatus: null };
+            }
+
+            // 6. Not Started (future date, pre-cutoff today, or weekend)
+            return { userId, name, department: emp.department, status: 'Not Started', clockIn: null, clockOut: null, attendanceStatus: null };
+        });
+
+        return res.status(200).json({ date: targetDate, employees: employeeList, summary });
+    } catch (error) {
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+}
+
+module.exports = { clockIn, clockOut, startBreak, endBreak, getTodayStatus, getMyAttendance, getAllAttendance, updateRemarks, getTodaySummary };
