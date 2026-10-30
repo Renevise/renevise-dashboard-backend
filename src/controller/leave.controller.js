@@ -1,5 +1,6 @@
 const LeaveModel         = require('../model/leave.model');
 const UserModel          = require('../model/user.model');
+const AttendanceModel    = require('../model/attendance.model');
 const NotificationModel  = require('../model/notification.model');
 const { sendLeaveStatusEmail, sendLeaveRequestAdminEmail } = require('../services/email.service');
 const { syncLeaveRequestToSnow, syncEmployeeToSnow } = require('../services/servicenow.service');
@@ -19,10 +20,13 @@ function countWorkingDays(fromDateStr, untilDateStr) {
     return count;
 }
 
+const FRACTIONAL_TYPES = ['Half Day Leave', 'Early Leave'];
+
 // Return a plain object with days recomputed from the date range.
-// If the stored value differs (pre-fix record), patch the DB silently in the background.
+// Half Day Leave and Early Leave store fractional/zero days intentionally — skip auto-correct for them.
 function withCorrectedDays(doc) {
     const obj = doc.toObject ? doc.toObject() : { ...doc };
+    if (FRACTIONAL_TYPES.includes(obj.leaveType)) return obj;
     const wd  = countWorkingDays(obj.fromDate, obj.untilDate);
     if (obj.days !== wd) {
         LeaveModel.findByIdAndUpdate(obj._id, { days: wd })
@@ -40,6 +44,11 @@ function calcLeaveStats(leaves, targetYear, targetMonth) {
     let yearlyUsed  = 0;
     let monthlyUsed = 0;
     for (const l of leaves.filter(l => l.status === 'Approved')) {
+        if (l.leaveType === 'Early Leave') continue;
+
+        const isHalfDay = l.leaveType === 'Half Day Leave';
+        const increment = isHalfDay ? 0.5 : 1;
+
         const from  = new Date(l.fromDate  + 'T00:00:00');
         const until = new Date(l.untilDate + 'T00:00:00');
         const cur   = new Date(from);
@@ -50,8 +59,8 @@ function calcLeaveStats(leaves, targetYear, targetMonth) {
                 const y = cur.getFullYear();
                 const m = cur.getMonth() + 1;
                 if (y === targetYear) {
-                    yearlyUsed++;
-                    if (m === targetMonth) monthlyUsed++;
+                    yearlyUsed  += increment;
+                    if (m === targetMonth) monthlyUsed += increment;
                 }
             }
             cur.setDate(cur.getDate() + 1);
@@ -63,13 +72,35 @@ function calcLeaveStats(leaves, targetYear, targetMonth) {
 async function applyLeave(req, res) {
     try {
         const userId = req.user.userId;
-        const { leaveType, fromDate, untilDate, reason } = req.body;
+        const { leaveType, fromDate, reason, departureTime } = req.body;
+        let { untilDate } = req.body;
 
-        if (!leaveType || !fromDate || !untilDate || !reason?.trim()) {
+        if (!leaveType || !fromDate || !reason?.trim()) {
             return res.status(400).json({ message: 'All fields are required' });
         }
-        if (untilDate < fromDate) {
-            return res.status(400).json({ message: 'Until date must be on or after from date' });
+
+        const isHalfDay   = leaveType === 'Half Day Leave';
+        const isEarlyLeave = leaveType === 'Early Leave';
+
+        if (isHalfDay) {
+            untilDate = fromDate;
+        } else if (isEarlyLeave) {
+            if (!departureTime || !/^\d{2}:\d{2}$/.test(departureTime)) {
+                return res.status(400).json({ message: 'Please provide a valid departure time (HH:MM) for Early Leave' });
+            }
+            untilDate = fromDate;
+        } else {
+            if (!untilDate) {
+                return res.status(400).json({ message: 'All fields are required' });
+            }
+            if (untilDate < fromDate) {
+                return res.status(400).json({ message: 'Until date must be on or after from date' });
+            }
+        }
+
+        const dow = new Date(fromDate + 'T00:00:00').getDay();
+        if ((isHalfDay || isEarlyLeave) && (dow === 0 || dow === 6)) {
+            return res.status(400).json({ message: 'Cannot submit this leave type for a weekend day' });
         }
 
         const user = await UserModel.findById(userId).select('-password');
@@ -80,12 +111,19 @@ async function applyLeave(req, res) {
             return res.status(409).json({ message: 'A pending leave request already exists for these dates' });
         }
 
-        const days = countWorkingDays(fromDate, untilDate);
-        if (days < 1) {
-            return res.status(400).json({ message: 'The selected dates contain no working days. Saturday and Sunday are not chargeable leave days.' });
+        let days;
+        if (isHalfDay) {
+            days = 0.5;
+        } else if (isEarlyLeave) {
+            days = 0;
+        } else {
+            days = countWorkingDays(fromDate, untilDate);
+            if (days < 1) {
+                return res.status(400).json({ message: 'The selected dates contain no working days. Saturday and Sunday are not chargeable leave days.' });
+            }
         }
 
-        const leave = await LeaveModel.create({
+        const createFields = {
             userId,
             employee : user.userName,
             email    : user.email,
@@ -94,7 +132,10 @@ async function applyLeave(req, res) {
             untilDate,
             days,
             reason: reason.trim(),
-        });
+        };
+        if (isEarlyLeave) createFields.departureTime = departureTime;
+
+        const leave = await LeaveModel.create(createFields);
 
         UserModel.find({ role: 'admin' }).select('email userName')
             .then(admins => {
@@ -108,7 +149,7 @@ async function applyLeave(req, res) {
                         leaveId: leave._id,
                         type   : 'leave_submitted',
                         title  : 'New Leave Request',
-                        message: `${user.userName} submitted a ${leaveType} leave request from ${fromDate} to ${untilDate} (${days} day${days !== 1 ? 's' : ''}).`,
+                        message: `${user.userName} submitted a ${leaveType} request for ${fromDate}${isEarlyLeave ? ` (departure: ${departureTime})` : untilDate !== fromDate ? ` to ${untilDate}` : ''} — ${days} day${days !== 1 ? 's' : ''}.`,
                     }).catch(err => console.error('[Notification] Admin leave notify failed:', err.message));
                 });
                 return Promise.all(
@@ -245,7 +286,19 @@ async function reviewLeave(req, res) {
             })
             .catch(err => console.error(`[LeaveSync] Leave review sync failed: ${err.message}`));
 
-        const reviewDays = countWorkingDays(leave.fromDate, leave.untilDate);
+        const isHalfDayLeave  = leave.leaveType === 'Half Day Leave';
+        const isEarlyLeaveType = leave.leaveType === 'Early Leave';
+        const reviewDays = (isHalfDayLeave || isEarlyLeaveType)
+            ? leave.days
+            : countWorkingDays(leave.fromDate, leave.untilDate);
+
+        if (status === 'Approved' && (isHalfDayLeave || isEarlyLeaveType)) {
+            const attendanceStatus = isHalfDayLeave ? 'Half Day' : 'Early Leave';
+            AttendanceModel.findOneAndUpdate(
+                { userId: leave.userId, date: leave.fromDate },
+                { status: attendanceStatus },
+            ).catch(err => console.warn(`[Leave] Attendance status update failed for ${leave.fromDate}:`, err.message));
+        }
 
         sendLeaveStatusEmail({
             to          : leave.email,
@@ -257,12 +310,18 @@ async function reviewLeave(req, res) {
             status,
         }).catch(err => console.error('Email send failed:', err.message));
 
+        const notifSuffix = isHalfDayLeave
+            ? ''
+            : isEarlyLeaveType
+                ? ` (departure: ${leave.departureTime})`
+                : ` to ${leave.untilDate} (${reviewDays} day${reviewDays !== 1 ? 's' : ''})`;
+
         NotificationModel.create({
             userId : leave.userId,
             leaveId: leave._id,
             type   : status === 'Approved' ? 'leave_approved' : 'leave_rejected',
             title  : `Leave Request ${status}`,
-            message: `Your ${leave.leaveType} leave from ${leave.fromDate} to ${leave.untilDate} (${reviewDays} day${reviewDays !== 1 ? 's' : ''}) has been ${status.toLowerCase()}.`,
+            message: `Your ${leave.leaveType} on ${leave.fromDate}${notifSuffix} has been ${status.toLowerCase()}.`,
         }).catch(err => console.error('Notification create failed:', err.message));
 
         return res.status(200).json({

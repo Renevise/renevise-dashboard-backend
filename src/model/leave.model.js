@@ -22,7 +22,8 @@ const leaveSchema = new mongoose.Schema(
         reviewedBy:    { type: String,   default: null },
         reviewedAt:    { type: Date,     default: null },
         remindersSent: { type: [String], default: [] },
-        snowLeaveId:  { type: String, default: null },
+        snowLeaveId:   { type: String, default: null },
+        departureTime: { type: String, default: null },
     },
     { timestamps: true }
 );
